@@ -10,6 +10,9 @@ keystore.properties
 .gradle/
 *.apk
 
+# Auto-downloaded by provision.ps1 when adb isn't on PATH
+/platform-tools/
+
 # Android Studio / IDE (machine-specific; regenerated on open)
 .idea/
 *.iml

@@ -6,6 +6,10 @@
   optionally installs the latest APK, and optionally sets the immortal launcher
   as the default home.
 
+  Needs nothing pre-installed: if adb isn't on your PATH, this downloads
+  Google's platform-tools automatically (into a platform-tools\ folder next
+  to this script) and uses that.
+
   USAGE (device connected via adb):
       .\provision.ps1                 # just grant permissions on the connected device
       .\provision.ps1 -Install        # install the APK first, then provision
@@ -32,15 +36,34 @@ param(
 $ErrorActionPreference = "Continue"
 $pkg = "com.aeonos.portalha"
 
-# Prefer adb on PATH; otherwise look for a platform-tools folder next to this script.
-$adb = if (Get-Command adb -ErrorAction SilentlyContinue) {
-    "adb"
-} elseif (Test-Path (Join-Path $PSScriptRoot "platform-tools\adb.exe")) {
-    Join-Path $PSScriptRoot "platform-tools\adb.exe"
-} else {
-    Write-Host "adb not found. Install Android platform-tools and add adb to your PATH, then re-run." -ForegroundColor Red
+# Find adb, or bootstrap it: prefer adb on PATH, then a platform-tools folder
+# next to this script, and as a last resort download Google's platform-tools
+# automatically (like Immortal's setup) so the user needs nothing pre-installed.
+function Resolve-Adb {
+    $cmd = Get-Command adb -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
+    $local = Join-Path $PSScriptRoot "platform-tools\adb.exe"
+    if (Test-Path $local) { return $local }
+
+    Write-Host "adb not found - downloading Android platform-tools (one-time, ~8 MB)..." -ForegroundColor Yellow
+    $url = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip"
+    $zip = Join-Path $env:TEMP "platform-tools-latest-windows.zip"
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+        Expand-Archive -Path $zip -DestinationPath $PSScriptRoot -Force
+        Remove-Item $zip -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "Could not download platform-tools: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Install it manually from https://developer.android.com/tools/releases/platform-tools and re-run." -ForegroundColor Red
+        exit 1
+    }
+    if (Test-Path $local) { Write-Host "  platform-tools ready." -ForegroundColor Green; return $local }
+    Write-Host "platform-tools download did not contain adb.exe." -ForegroundColor Red
     exit 1
 }
+$adb = Resolve-Adb
 
 # Build the device-target prefix (-s SERIAL) when a serial is given.
 $target = @(); if ($Serial) { $target = @("-s", $Serial) }
