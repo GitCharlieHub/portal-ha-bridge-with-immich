@@ -199,4 +199,6 @@ SETUP.md                Detailed setup & MQTT topics
 
 ## License
 
-No license file yet — add one (e.g. MIT) if you want others to reuse the code.
+**PolyForm Noncommercial License 1.0.0** — see [LICENSE](LICENSE).
+
+You're free to use, modify, and share this for **noncommercial** purposes (personal, hobby, education, non-profit). **All commercial use is reserved** to the copyright holder — © 2026 RoadRunner-1024. For a commercial license, contact the author.
