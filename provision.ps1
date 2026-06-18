@@ -1,25 +1,26 @@
 <#
   provision.ps1 - one-shot setup for a Portal HA Bridge device.
 
-  Grants every permission/app-op the app needs (all require ADB - they can't be
-  granted from the Portal UI), enables the screen-control AccessibilityService,
-  optionally installs the latest APK, and optionally sets the immortal launcher
-  as the default home.
+  Installs the app if it isn't already on the device, grants every
+  permission/app-op it needs (all require ADB - they can't be granted from the
+  Portal UI), enables the screen-control AccessibilityService, and optionally
+  sets the immortal launcher as the default home.
 
   Needs nothing pre-installed. This single file is enough:
       1. download provision.ps1
-      2. .\provision.ps1 -Install
-  If adb isn't on your PATH it downloads Google's platform-tools, and with
-  -Install it downloads the latest release APK too - both automatically.
+      2. .\provision.ps1
+  It auto-installs the app when missing; if adb isn't on your PATH it downloads
+  Google's platform-tools; and if no local APK is found it downloads the latest
+  release APK - all automatically.
 
   USAGE (device connected via adb):
-      .\provision.ps1                 # just grant permissions on the connected device
-      .\provision.ps1 -Install        # download (if needed) + install the APK, then provision
-      .\provision.ps1 -Install -Apk C:\path\portal-ha-bridge.apk   # install a specific APK
+      .\provision.ps1                 # install app if needed, then grant everything
+      .\provision.ps1 -Install        # force a reinstall / update to the latest APK
+      .\provision.ps1 -Apk C:\path\portal-ha-bridge.apk   # install a specific APK
       .\provision.ps1 -Serial 821..   # target a specific device (use when several are connected)
       .\provision.ps1 -SetLauncher    # also set immortal as the default home launcher
 
-  With -Install the APK is resolved from, in order: -Apk; the build output
+  The APK is resolved from, in order: -Apk; the build output
   (app\build\outputs\apk\release\app-release.apk); a portal-ha-bridge.apk /
   app-release.apk sitting next to this script; otherwise the latest GitHub
   release APK is downloaded automatically.
@@ -78,9 +79,13 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-if ($Install) {
-    # Resolve the APK: explicit -Apk, then the build output, then a downloaded
-    # APK dropped next to this script.
+# Install the app if it isn't already on the device (or if -Install / -Apk
+# forces it). Everything after this needs the package to exist.
+$installed = (Adb shell "pm list packages $pkg" | ForEach-Object { $_.Trim() }) -contains "package:$pkg"
+
+if (-not $installed -or $Install -or $Apk) {
+    # Resolve the APK: explicit -Apk, then the build output, then an APK dropped
+    # next to this script, else download the latest release.
     $candidates = @()
     if ($Apk) { $candidates += $Apk }
     $candidates += (Join-Path $PSScriptRoot "app\build\outputs\apk\release\app-release.apk")
@@ -105,6 +110,16 @@ if ($Install) {
     }
     Write-Host "Installing $apk ..." -ForegroundColor Cyan
     Adb install -r -t $apk
+
+    # Confirm it landed before granting - otherwise pm grant / appops fail with
+    # the confusing "No UID for $pkg in user 0" errors.
+    $installed = (Adb shell "pm list packages $pkg" | ForEach-Object { $_.Trim() }) -contains "package:$pkg"
+    if (-not $installed) {
+        Write-Host "Install failed - $pkg is still not present. See the adb output above." -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "App already installed (use -Install to force an update)." -ForegroundColor DarkGray
 }
 
 Write-Host "Granting permissions..." -ForegroundColor Cyan
