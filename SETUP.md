@@ -1,6 +1,8 @@
 # Portal HA Bridge — Setup
 
-Exposes a **Home Assistant switch entity** for the Portal's screen. Send `OFF` to sleep it, `ON` to wake it. Runs as a persistent foreground service; starts automatically on boot.
+Detailed install & MQTT reference. For the full feature list (camera, motion, presence, sensors, audio, tones) see the [README](README.md).
+
+Runs as a persistent foreground service that starts on boot and exposes the Portal to Home Assistant over MQTT auto-discovery — including a screen switch (`OFF` sleeps, `ON` wakes).
 
 ## Requirements
 
@@ -24,8 +26,8 @@ adb install portal-ha-bridge.apk
 **Fastest (Windows, device on USB):** run the provisioner — it installs the APK and grants everything, prompting for the two optional adb-only features (screen sleep, presence):
 
 ```powershell
-.\provision-portal.ps1            # interactive
-.\provision-portal.ps1 -AssumeYes # unattended / bulk
+.\provision.ps1 -Install                # install APK + grant everything
+.\provision.ps1 -Install -SetLauncher   # + set the immortal kiosk launcher
 ```
 
 **Or, no computer needed for most of it:** open the app and tap **Grant Missing Permissions**, then keep tapping until the status box is all ✓. This handles **everything except screen sleep with no adb** — camera and microphone via permission dialogs; brightness and overlay are auto-granted on Portal.
@@ -85,11 +87,11 @@ The device ID is shown in the app's status area.
   "name": "Portal HA Bridge",
   "packageName": "com.aeonos.portalha",
   "source": "url",
-  "apkUrl": "https://github.com/YOUR_USER/portal-ha-bridge/releases/latest/download/portal-ha-bridge.apk",
-  "minSdk": 29,
-  "description": "Home Assistant MQTT bridge — sleep/wake the Portal screen from HA automations",
-  "author": "YOUR_NAME",
-  "homepage": "https://github.com/YOUR_USER/portal-ha-bridge"
+  "apkUrl": "https://github.com/RoadRunner-1024/portal-ha-bridge/releases/latest/download/portal-ha-bridge.apk",
+  "minSdk": 28,
+  "description": "Home Assistant MQTT bridge for Meta Portal — screen, camera, sensors, presence",
+  "author": "RoadRunner-1024",
+  "homepage": "https://github.com/RoadRunner-1024/portal-ha-bridge"
 }
 ```
 
