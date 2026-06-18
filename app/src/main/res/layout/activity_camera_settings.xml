@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/background"
+    android:padding="24dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="16dp">
+
+            <Button
+                android:id="@+id/btn_back"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="←  Back"
+                android:backgroundTint="#37474F" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Camera Settings"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="@color/onSurface"
+                android:layout_marginStart="16dp" />
+        </LinearLayout>
+
+        <!-- Master service switch -->
+        <Switch
+            android:id="@+id/sw_camera_service"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Camera Service"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="@color/onSurface"
+            android:paddingVertical="12dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Master switch. When off, the camera cannot be turned on from Home Assistant or this app, and all camera entities are removed from Home Assistant."
+            android:textSize="12sp"
+            android:textColor="@color/hint"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Camera power -->
+        <Button
+            android:id="@+id/btn_camera_power"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#1B5E20"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Sub-features -->
+        <Switch
+            android:id="@+id/sw_motion"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Motion (uses camera)"
+            android:textSize="15sp"
+            android:textColor="@color/onSurface"
+            android:paddingVertical="12dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Adds a motion sensor and sensitivity slider to Home Assistant. Detects motion from camera frames while the camera is on."
+            android:textSize="12sp"
+            android:textColor="@color/hint"
+            android:layout_marginBottom="12dp" />
+
+        <Switch
+            android:id="@+id/sw_stream"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Camera Streaming Service"
+            android:textSize="15sp"
+            android:textColor="@color/onSurface"
+            android:paddingVertical="12dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Serves an H.264 RTSP stream on port 8554 while the camera is on (rtsp://device-ip:8554/). Replaces motion detection while active."
+            android:textSize="12sp"
+            android:textColor="@color/hint"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/btn_rotate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:backgroundTint="#37474F"
+            android:layout_marginBottom="12dp" />
+
+        <TextView
+            android:id="@+id/tv_camera_url"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="11sp"
+            android:textColor="@color/hint"
+            android:fontFamily="monospace"
+            android:background="@color/surface"
+            android:padding="8dp"
+            android:layout_marginBottom="20dp"
+            android:visibility="gone" />
+
+    </LinearLayout>
+</ScrollView>

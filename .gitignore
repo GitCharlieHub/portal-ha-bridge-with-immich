@@ -1,0 +1,17 @@
+# ── Signing secrets — NEVER share. Keep locally: losing them means you can
+#    never sign an update that installs over the existing app. ──
+keystore.properties
+*.keystore
+*.jks
+
+# Build outputs
+/build
+/app/build
+.gradle/
+*.apk
+
+# Android Studio / IDE (machine-specific; regenerated on open)
+.idea/
+*.iml
+local.properties
+.DS_Store
