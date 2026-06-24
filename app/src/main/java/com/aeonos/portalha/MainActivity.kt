@@ -127,6 +127,7 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<TextView>(R.id.tv_status).text = buildString {
             appendLine("Device ID: ${prefs.deviceId}")
+            appendLine("IP:        ${BridgeService.localIp() ?: "(no network)"}")
             appendLine("Broker:    ${prefs.brokerUri}")
             appendLine()
             appendLine("CAMERA:                ${if (hasCamera) "✓" else "✗  tap Grant below"}")

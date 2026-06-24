@@ -45,8 +45,9 @@ Meta Portal family on **Android 9 (API 28)** and **Android 10 (API 29)** — Por
 
 ## Quick start
 
-### 1. Install + provision (Windows)
-Download the provisioner and run it with the Portal connected via ADB:
+### 1. Install + provision
+
+**Windows:**
 
 ```powershell
 iwr https://raw.githubusercontent.com/RoadRunner-1024/portal-ha-bridge/main/provision.ps1 -OutFile provision.ps1
@@ -54,17 +55,25 @@ Unblock-File .\provision.ps1
 .\provision.ps1
 ```
 
-That one command does everything — **nothing needs to be pre-installed**. It downloads Google's platform-tools if `adb` isn't on your PATH, downloads and installs the latest release APK if the app isn't already on the device, grants every permission/app-op (all require ADB — they can't be granted from the Portal UI), auto-enables the screen-control accessibility service, and prints a green verification checklist.
+**macOS / Linux:**
 
-| Flag | Effect |
+```bash
+curl -fsSL https://raw.githubusercontent.com/RoadRunner-1024/portal-ha-bridge/main/provision.sh -o provision.sh
+chmod +x provision.sh
+./provision.sh
+```
+
+Both do the same thing — **nothing needs to be pre-installed**. The script downloads Google's platform-tools if `adb` isn't on your PATH, downloads and installs the latest release APK if the app isn't already on the device, grants every permission/app-op (all require ADB — they can't be granted from the Portal UI), auto-enables the screen-control accessibility service, and prints a green verification checklist.
+
+| Flag (Windows / macOS+Linux) | Effect |
 |---|---|
 | *(none)* | install the app if it's missing, then grant everything |
-| `-Install` | force a reinstall / update to the latest APK |
-| `-Apk <path>` | install a specific APK instead of downloading |
-| `-SetLauncher` | also set the immortal launcher as the kiosk home |
-| `-Serial <id>` | target a specific device when several are attached |
+| `-Install` / `--install` | force a reinstall / update to the latest APK |
+| `-Apk <path>` / `--apk <path>` | install a specific APK instead of downloading |
+| `-SetLauncher` / `--set-launcher` | also set the immortal launcher as the kiosk home |
+| `-Serial <id>` / `--serial <id>` | target a specific device when several are attached |
 
-> Prefer to build it yourself? See [Building from source](#building-from-source) — `provision.ps1` automatically uses your build output if it finds one.
+> Prefer to build it yourself? See [Building from source](#building-from-source) — the provisioner automatically uses your build output if it finds one.
 >
 > No computer at all? You can install the APK and grant **most** things via the app's own permission prompts — but **screen sleep and Portal presence each need a one-time ADB grant** (`WRITE_SECURE_SETTINGS` and `READ_LOGS`), because Portal blocks them from its UI. See [SETUP.md](SETUP.md).
 
@@ -97,6 +106,20 @@ Notes:
 - Audio is intentionally dropped — the Portal mic is reserved for calls and the sound sensor.
 - If a **Portal call** grabs the camera, the stream is auto-recovered when you return to the dashboard app.
 - Orientation: a manual **Rotate** button is provided; on fixed-orientation Portals you set it once.
+
+### Portal+ camera aspect ratio
+
+The Portal+ front camera ("Smart Camera") only exposes a virtual sensor that scales its field of view into whatever size is requested, so a normal 16:9 request comes out badly stretched. The app corrects this per model:
+
+- **Portal+ 1st gen (`aloha`)** — its usable FOV is ~square, so the stream is encoded **480×480 (1:1)**. It displays correctly in every player with **no extra config**.
+- **Portal+ 2nd gen (`cipher`)** — its FOV is 4:3 but the camera is portrait-mounted, so making it upright forces a **480×640** portrait buffer (a 4:3 scene squashed into 3:4). The encoder library can't stamp a pixel-aspect flag, so the 4:3 is applied **viewer-side**. For the HA WebRTC card, add a SAR via go2rtc's ffmpeg — it's a no-re-encode bitstream filter:
+
+  ```yaml
+  type: custom:webrtc-camera
+  url: 'ffmpeg:rtsp://<cipher-ip>:8554/#video=copy#raw=-bsf:v h264_metadata=sample_aspect_ratio=16/9'
+  ```
+
+  In VLC direct, set **Video → Aspect Ratio → 4:3**. (A future encoder-pipeline rewrite could bake the aspect into the stream itself.)
 
 ### Show camera feeds only when on (HA dashboard view)
 
@@ -133,13 +156,15 @@ Plus an on-device idle timer (**Screen Timeout** / **…Minutes**) that sleeps t
 ## Per-model notes
 
 - **Temperature / RGB / sensors** are hardware-dependent and auto-detected — entities only appear if the sensor exists.
-- **Portal+ 2nd gen (`cipher`)**: its accelerometer is mounted on the **moving screen arm**, which heavily dampens taps. On this model the tap threshold is auto-scaled for sensitivity, the gesture is relabelled **"Tilt"**, and its dominant (Z) axis reports **up/down** instead of front/back. This is automatic — no config.
+- **Camera aspect ratio** differs by Portal+ generation — `aloha` streams square (1:1, no config), `cipher` streams 480×640 and needs the one-line 4:3 SAR filter in the HA card. See [Portal+ camera aspect ratio](#portal-camera-aspect-ratio).
+- **Camera orientation**: both Portal+ models have a **fixed camera** (it doesn't pivot with the screen), so accelerometer auto-rotate is disabled for them and the stream uses a fixed rotation — upright out of the box (`aloha` rot 0, `cipher` rot 90), adjustable with the in-app **Rotate** button. Auto-rotate still applies to non-Portal+ models.
+- **Portal+ 2nd gen (`cipher`)**: its accelerometer is mounted on the **moving screen arm**, which heavily dampens taps — so the tap threshold is auto-scaled, the gesture is relabelled **"Tilt"**, and its dominant (Z) axis reports **up/down** instead of front/back. All automatic — no config.
 
 ---
 
 ## Permissions
 
-All ADB-granted (they can't be granted from the Portal UI). `provision.ps1` does these for you:
+All ADB-granted (they can't be granted from the Portal UI). The provisioner (`provision.ps1` on Windows, `provision.sh` on macOS/Linux) does these for you:
 
 | Permission / app-op | Used for |
 |---|---|
@@ -184,7 +209,8 @@ app/src/main/java/com/aeonos/portalha/
   DashboardActivity.kt  Full-screen HA WebView (kiosk)
   MainActivity.kt       Settings / configuration UI
   Prefs.kt              SharedPreferences wrapper
-provision.ps1           One-shot device setup (install + permissions + launcher)
+provision.ps1           One-shot device setup for Windows (install + permissions + launcher)
+provision.sh            One-shot device setup for macOS / Linux (same steps)
 SETUP.md                Detailed setup & MQTT topics
 ```
 
@@ -193,7 +219,7 @@ SETUP.md                Detailed setup & MQTT topics
 ## Troubleshooting
 
 - **Camera "1 frame then freezes" in HA** → use the `ffmpeg:…#video=copy` URL (drops the AAC track); ensure the app is recent (Constrained Baseline profile).
-- **No screen sleep** → `WRITE_SECURE_SETTINGS` not granted; run `provision.ps1` (or the single grant in SETUP.md).
+- **No screen sleep** → `WRITE_SECURE_SETTINGS` not granted; run the provisioner (`provision.ps1` / `provision.sh`), or use the single grant in SETUP.md.
 - **Camera "can't open from background"** → re-open the dashboard app (it re-acquires the camera in the foreground).
 - **Provision says "no device"** → check `adb devices`, re-plug, accept the USB-debugging prompt.
 

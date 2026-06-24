@@ -134,6 +134,13 @@ class BridgeService : Service() {
     // blips clients), and only acts while streaming.
     @Volatile private var lastDeviceOrientation = -1   // committed snapped angle
     @Volatile private var pendingDeviceOrientation = -1
+    // Both Portal+ models have a FIXED camera that does NOT pivot with the screen, so
+    // auto-rotate (accelerometer) is wrong for them — it kept changing rotation as the
+    // screen turned. Disable it; use the persisted streamRotation (default 0 for aloha =
+    // upright, 90 for cipher). The manual ROTATE button still adjusts it. Other models
+    // (e.g. the 10" Portal) keep the accelerometer auto-rotate.
+    private val isAloha = android.os.Build.DEVICE.equals("aloha", true)
+    private val isCipher = android.os.Build.DEVICE.equals("cipher", true)
     private val orientationApply = Runnable { commitDeviceOrientation() }
     private val orientationListener by lazy {
         object : OrientationEventListener(this) {
@@ -192,7 +199,9 @@ class BridgeService : Service() {
         reconcilePresence(p)
         timeoutHandler.post(timeoutRunnable)
 
-        if (p.cameraServiceEnabled && orientationListener.canDetectOrientation()) {
+        if (p.cameraServiceEnabled && (isAloha || isCipher)) {
+            Log.i(TAG, "orientation auto-rotate disabled (Portal+ camera is fixed; uses streamRotation)")
+        } else if (p.cameraServiceEnabled && orientationListener.canDetectOrientation()) {
             orientationListener.enable()
             Log.i(TAG, "orientation auto-rotate enabled (accelerometer)")
         } else if (p.cameraServiceEnabled) {
@@ -462,6 +471,7 @@ class BridgeService : Service() {
         publishVolumeMuteState(p)
         publishBrightnessState(p)
         publishDisplayStates(p)
+        publishRaw(HaDiscovery.ipStateTopic(p.deviceId), localIp() ?: "unknown", 1, retained = true)
         if (sensorBridge?.hasTemperature == true)
             publishRaw(HaDiscovery.tempOffsetStateTopic(p.deviceId), "%.1f".format(p.tempOffset), 1, retained = true)
         if (p.cameraServiceEnabled) {
@@ -493,6 +503,7 @@ class BridgeService : Service() {
         fun pub(topic: String, payload: String) = client.publish(topic, retained(payload))
 
         pub(HaDiscovery.discoveryTopic(p.deviceId), HaDiscovery.configPayload(p.deviceId, p.deviceName))
+        pub(HaDiscovery.ipDiscoveryTopic(p.deviceId), HaDiscovery.ipConfigPayload(p.deviceId, p.deviceName))
         pub(HaDiscovery.lightDiscoveryTopic(p.deviceId), HaDiscovery.lightConfigPayload(p.deviceId, p.deviceName))
         for (axis in listOf("x", "y", "z"))
             pub(HaDiscovery.accelDiscoveryTopic(p.deviceId, axis), HaDiscovery.accelConfigPayload(p.deviceId, p.deviceName, axis))
@@ -817,14 +828,14 @@ class BridgeService : Service() {
         if (snapped == -1 || snapped == lastDeviceOrientation) return
         lastDeviceOrientation = snapped
         val r = rtspStreamer ?: return
-        // Device physical angle -> stream rotation that keeps it upright. The Portal
-        // reads device=270 when sitting in its normal landscape (sensor natural is
-        // portrait), and there we want rotation 0 — so (device + 90) % 360.
+        // Stream rotation to keep the picture upright. On aloha (square FOV) the user
+        // wants portrait->90, landscape->0; other models use the generic (device+90).
+        // Only non-Portal+ models reach here (Portal+ auto-rotate is disabled — fixed cam).
         val auto = (snapped + 90) % 360
+        Log.i(TAG, "orientation commit: snapped=$snapped -> auto=$auto (offset=${r.rotationOffset}, was=${r.autoRotation})")
         if (auto == r.autoRotation) return   // no actual change — leave the stream alone
         r.autoRotation = auto
         commandExecutor.submit {
-            Log.i(TAG, "orientation: device=${snapped}deg -> autoRotation=$auto (manual ${r.rotationOffset}), streaming=${r.isStreaming}")
             if (r.isStreaming) r.restart()
         }
     }

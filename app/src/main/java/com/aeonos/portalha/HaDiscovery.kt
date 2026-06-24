@@ -316,6 +316,18 @@ object HaDiscovery {
         return """{"name":"Screen Timeout Minutes","unique_id":"${deviceId}_screen_timeout_mins","device":${device(deviceId, name)},"state_topic":"${screenTimeoutMinsStateTopic(deviceId)}","command_topic":"${screenTimeoutMinsCommandTopic(deviceId)}","min":1,"max":240,"step":1,"mode":"box","unit_of_measurement":"min","icon":"mdi:timer-cog"}"""
     }
 
+    // ── IP address sensor (diagnostic) ────────────────────────────────────────
+
+    fun ipDiscoveryTopic(deviceId: String) =
+        "homeassistant/sensor/${deviceId}_ip/config"
+
+    fun ipStateTopic(deviceId: String) = "portal/$deviceId/sensor/ip"
+
+    fun ipConfigPayload(deviceId: String, deviceName: String): String {
+        val name = deviceName.escape()
+        return """{"name":"IP Address","unique_id":"${deviceId}_ip","device":${device(deviceId, name)},"state_topic":"${ipStateTopic(deviceId)}","icon":"mdi:ip-network","entity_category":"diagnostic"}"""
+    }
+
     // ── Stale entity cleanup ──────────────────────────────────────────────────
 
     fun staleTopics(deviceId: String) = listOf(

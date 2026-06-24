@@ -11,9 +11,11 @@ Runs as a persistent foreground service that starts on boot and exposes the Port
 
 ## Installation
 
-### Recommended: one command (Windows)
+### Recommended: one command
 
 The provisioner needs nothing pre-installed. With the Portal connected via ADB:
+
+**Windows:**
 
 ```powershell
 iwr https://raw.githubusercontent.com/RoadRunner-1024/portal-ha-bridge/main/provision.ps1 -OutFile provision.ps1
@@ -22,7 +24,16 @@ Unblock-File .\provision.ps1
 .\provision.ps1 -SetLauncher    # + set the immortal kiosk launcher
 ```
 
-It downloads `adb` (platform-tools) if it isn't on your PATH, downloads + installs the latest release APK if the app isn't already present, grants every permission/app-op, and enables the screen-control accessibility service. Use `-Install` later to force an update to a newer APK.
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RoadRunner-1024/portal-ha-bridge/main/provision.sh -o provision.sh
+chmod +x provision.sh
+./provision.sh                  # install the app if missing + grant everything
+./provision.sh --set-launcher   # + set the immortal kiosk launcher
+```
+
+Both download `adb` (platform-tools) if it isn't on your PATH, download + install the latest release APK if the app isn't already present, grant every permission/app-op, and enable the screen-control accessibility service. Use `-Install` / `--install` later to force an update to a newer APK.
 
 ### Manual install (any OS with adb)
 

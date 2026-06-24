@@ -98,7 +98,9 @@ class Prefs(private val context: Context) {
 
     // Manual stream rotation in degrees (0/90/180/270), cycled from the app.
     var streamRotation: Int
-        get() = sp.getInt("stream_rotation", 0)
+        // cipher (2nd-gen Portal+) is fixed-orientation and needs +90 to be upright;
+        // default it there so it's correct out of the box (still adjustable).
+        get() = sp.getInt("stream_rotation", if (android.os.Build.DEVICE.equals("cipher", true)) 90 else 0)
         set(v) = sp.edit().putInt("stream_rotation", v).apply()
 
     // Portal presence — reads Meta's own face-presence detection by tailing
