@@ -1,0 +1,14 @@
+# Gradle build cache and generated outputs
+.gradle/
+build/
+app/build/
+
+# Android Studio / IntelliJ project files
+*.iml
+.idea/
+local.properties
+
+# Keystore (never commit — losing it means losing the ability to update the installed APK)
+*.jks
+*.keystore
+keystore.properties
