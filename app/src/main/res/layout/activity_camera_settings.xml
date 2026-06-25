@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1c1c1c">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="20dp">
+
+            <Button
+                android:id="@+id/btn_back"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="← Back"
+                android:backgroundTint="#333333"
+                android:textColor="#ffffff"
+                android:layout_marginEnd="12dp" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Camera &amp; Streaming"
+                android:textColor="#ffffff"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+        </LinearLayout>
+
+        <!-- Camera service master switch -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="12dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Camera Service"
+                android:textColor="#ffffff"
+                android:textSize="16sp" />
+
+            <Switch
+                android:id="@+id/sw_camera_service"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Enable to expose camera to Home Assistant."
+            android:textColor="#888888"
+            android:textSize="13sp"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Motion detection switch -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="4dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Motion Detection (MJPEG)"
+                android:textColor="#cccccc"
+                android:textSize="15sp" />
+
+            <Switch
+                android:id="@+id/sw_motion"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Streams MJPEG on port 8080. Mutually exclusive with RTSP."
+            android:textColor="#666666"
+            android:textSize="12sp"
+            android:layout_marginBottom="16dp" />
+
+        <!-- RTSP stream switch -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="4dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="RTSP Streaming"
+                android:textColor="#cccccc"
+                android:textSize="15sp" />
+
+            <Switch
+                android:id="@+id/sw_stream"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="H.264 RTSP server on port 8554. Use with WebRTC card in HA."
+            android:textColor="#666666"
+            android:textSize="12sp"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Camera on/off and rotate buttons (shown only when service is on) -->
+        <Button
+            android:id="@+id/btn_camera_power"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Turn Camera On"
+            android:backgroundTint="#1B5E20"
+            android:layout_marginBottom="8dp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btn_rotate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Rotate Stream (currently 0°)"
+            android:backgroundTint="#333333"
+            android:layout_marginBottom="16dp"
+            android:visibility="gone" />
+
+        <!-- Stream URL info -->
+        <TextView
+            android:id="@+id/tv_camera_url"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#252525"
+            android:fontFamily="monospace"
+            android:textColor="#cccccc"
+            android:textSize="12sp"
+            android:padding="12dp"
+            android:visibility="gone" />
+
+    </LinearLayout>
+
+</ScrollView>

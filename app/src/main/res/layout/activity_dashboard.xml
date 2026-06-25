@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.drawerlayout.widget.DrawerLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/drawer_layout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="false">
+
+    <!-- Full-screen WebView for the dashboard/photo-frame content -->
+    <WebView
+        android:id="@+id/web_view"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Left-edge drawer: swipe from the left to reveal these controls -->
+    <LinearLayout
+        android:layout_width="200dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="#1c1c1c"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:fitsSystemWindows="true">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Portal HA Bridge"
+            android:textColor="#ffffff"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Toggle between ImmichFrame photo slideshow and HA dashboard.
+             Visibility is set from code: only shown when both modes are available. -->
+        <Button
+            android:id="@+id/btn_toggle_mode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="HA Dashboard"
+            android:backgroundTint="#2D4A2D"
+            android:layout_marginBottom="12dp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/btn_open_settings"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Settings"
+            android:backgroundTint="#333333"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/btn_reload"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Reload"
+            android:backgroundTint="#333333" />
+
+    </LinearLayout>
+
+</androidx.drawerlayout.widget.DrawerLayout>

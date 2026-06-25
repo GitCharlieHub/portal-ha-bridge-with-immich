@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1c1c1c">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="20dp">
+
+            <Button
+                android:id="@+id/btn_back"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="← Back"
+                android:backgroundTint="#333333"
+                android:textColor="#ffffff"
+                android:layout_marginEnd="12dp" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Display &amp; Presence"
+                android:textColor="#ffffff"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+        </LinearLayout>
+
+        <!-- Presence detection -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Presence Detection"
+            android:textColor="#aaaaaa"
+            android:textSize="13sp"
+            android:textAllCaps="true"
+            android:layout_marginBottom="8dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="8dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Enable presence sensor"
+                android:textColor="#cccccc"
+                android:textSize="15sp" />
+
+            <Switch
+                android:id="@+id/sw_presence"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tv_presence_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#252525"
+            android:textColor="#cccccc"
+            android:textSize="13sp"
+            android:padding="10dp"
+            android:layout_marginBottom="20dp" />
+
+        <!-- Screen timeout -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Screen Timeout"
+            android:textColor="#aaaaaa"
+            android:textSize="13sp"
+            android:textAllCaps="true"
+            android:layout_marginBottom="8dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="8dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Auto-sleep screen when idle"
+                android:textColor="#cccccc"
+                android:textSize="15sp" />
+
+            <Switch
+                android:id="@+id/sw_screen_timeout"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content" />
+
+        </LinearLayout>
+
+        <!-- Timeout minutes row — alpha-dimmed when timeout is disabled -->
+        <LinearLayout
+            android:id="@+id/row_timeout_mins"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="20dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Sleep after (minutes)"
+                android:textColor="#cccccc"
+                android:textSize="14sp" />
+
+            <EditText
+                android:id="@+id/et_timeout_minutes"
+                android:layout_width="64dp"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:textColor="#ffffff"
+                android:backgroundTint="#555555"
+                android:textAlignment="center" />
+
+        </LinearLayout>
+
+        <!-- Temperature sensor section (shown only if hardware has the sensor) -->
+        <LinearLayout
+            android:id="@+id/section_temp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Temperature Sensor"
+                android:textColor="#aaaaaa"
+                android:textSize="13sp"
+                android:textAllCaps="true"
+                android:layout_marginBottom="8dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginBottom="8dp">
+
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Calibration offset (°C)"
+                    android:textColor="#cccccc"
+                    android:textSize="14sp" />
+
+                <EditText
+                    android:id="@+id/et_temp_offset"
+                    android:layout_width="72dp"
+                    android:layout_height="wrap_content"
+                    android:inputType="numberSigned|numberDecimal"
+                    android:textColor="#ffffff"
+                    android:backgroundTint="#555555"
+                    android:textAlignment="center" />
+
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="The Portal temperature sensor reads the accelerometer die temperature, which runs 5–15°C above ambient. Adjust until it matches a real thermometer."
+                android:textColor="#666666"
+                android:textSize="12sp"
+                android:layout_marginBottom="16dp" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+</ScrollView>
