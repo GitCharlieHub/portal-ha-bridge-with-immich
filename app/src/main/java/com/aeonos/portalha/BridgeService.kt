@@ -635,8 +635,8 @@ class BridgeService : Service(), MqttCallbackExtended {
     private fun startCameraStream() {
         if (cameraStream?.isActive == true) return
         val ms = mjpegServer ?: MjpegServer(8080).also {
-            it.username = prefs.username
-            it.password = prefs.password
+            it.username = "stream"
+            it.password = prefs.mjpegToken
             it.start()
             mjpegServer = it
         }

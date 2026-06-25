@@ -10,6 +10,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.GravityCompat
 import androidx.drawerlayout.widget.DrawerLayout
 import android.widget.Button
+import java.net.URI
 
 class DashboardActivity : AppCompatActivity() {
 
@@ -52,14 +53,38 @@ class DashboardActivity : AppCompatActivity() {
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest) {
-                // Grant media permissions so HA calls work inside the WebView
-                request.grant(request.resources)
+                // Grant camera/mic permissions only when the HA dashboard is active
+                // and the requesting origin matches the configured HA host.
+                // ImmichFrame is a photo viewer — it has no legitimate need for
+                // the device camera or microphone.
+                val origin = request.origin.toString().trimEnd('/')
+                val haOrigin = haOrigin()
+                if (currentMode == Mode.HA_DASHBOARD && haOrigin != null &&
+                        (origin == haOrigin || origin.startsWith("$haOrigin/"))) {
+                    request.grant(request.resources)
+                } else {
+                    android.util.Log.w("PortalHA",
+                        "Denied WebView permission request from $origin (mode=$currentMode haOrigin=$haOrigin)")
+                    request.deny()
+                }
             }
         }
 
         webView.webViewClient = object : WebViewClient() {
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-                handler.proceed() // Accept self-signed certs for local HA / ImmichFrame
+                // Proceed only for addresses that are definitively on the local network
+                // (RFC 1918, link-local, localhost, .local mDNS). An external host with
+                // a bad certificate is rejected — the user likely has a URL typo.
+                if (isLocalUrl(error.url ?: "")) {
+                    handler.proceed()
+                } else {
+                    handler.cancel()
+                    showPlaceholder(
+                        "SSL certificate error for an external host.\n" +
+                        "Check the URL in Settings — only local-network addresses\n" +
+                        "(192.168.x.x, 10.x.x.x, hostname.local …) are accepted."
+                    )
+                }
             }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (request.isForMainFrame) showPlaceholder("Failed to load — check the URL in Settings.")
@@ -74,16 +99,20 @@ class DashboardActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url.toString()
                 if (url.startsWith("http://") || url.startsWith("https://")) return false
-                // intent:// and other app schemes — WebView drops these silently,
-                // so hand them to Android (lets HA cards launch Portal apps).
+                // Only forward intent:// URIs — they let HA cards launch Portal apps.
+                // All other non-http(s) schemes (market://, settings://, file://, etc.)
+                // are blocked silently; a local dashboard page has no legitimate reason
+                // to trigger them, and they're a vector for page-to-app attacks.
+                if (!url.startsWith("intent:")) {
+                    android.util.Log.w("PortalHA", "Blocked non-http(s)/non-intent scheme: $url")
+                    return true
+                }
                 runCatching {
-                    val intent =
-                        if (url.startsWith("intent:")) Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                        else Intent(Intent.ACTION_VIEW, request.url)
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(intent)
+                    Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                        .also { it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                        .let { startActivity(it) }
                 }.onFailure {
-                    android.util.Log.w("PortalHA", "Could not launch $url: ${it.message}")
+                    android.util.Log.w("PortalHA", "Could not launch intent: ${it.message}")
                 }
                 return true
             }
@@ -156,11 +185,15 @@ class DashboardActivity : AppCompatActivity() {
         when (currentMode) {
             Mode.IMMICH_FRAME -> {
                 val url = prefs.immichFrameUrl.trim()
-                if (url.isBlank()) {
-                    showPlaceholder("ImmichFrame URL not set.\nSwipe from the left edge to open Settings.")
-                } else {
-                    webView.loadUrl(normalise(url))
+                if (!prefs.immichFrameEnabled || url.isBlank()) {
+                    // ImmichFrame was disabled in Settings while it was already active.
+                    // Fall back to HA dashboard rather than keep showing a stale frame.
+                    currentMode = Mode.HA_DASHBOARD
+                    updateModeButton()
+                    loadCurrentMode()
+                    return
                 }
+                webView.loadUrl(normalise(url))
             }
             Mode.HA_DASHBOARD -> {
                 val url = prefs.haUrl.trim()
@@ -172,6 +205,36 @@ class DashboardActivity : AppCompatActivity() {
             }
         }
     }
+
+    // Returns scheme+host+port for the configured HA URL, used to scope WebView
+    // permission grants. Returns null if the URL is blank or unparseable.
+    private fun haOrigin(): String? {
+        val url = prefs.haUrl.trim().ifBlank { return null }
+        return runCatching {
+            val u = URI(if (url.startsWith("http")) url else "http://$url")
+            buildString {
+                append(u.scheme ?: "http")
+                append("://")
+                append(u.host ?: return null)
+                if (u.port > 0) append(":${u.port}")
+            }
+        }.getOrNull()
+    }
+
+    // True for RFC 1918, link-local, localhost, and .local mDNS addresses.
+    // Used to gate handler.proceed() on SSL errors — we accept self-signed
+    // certs from local servers but not from anything that could be the internet.
+    private fun isLocalUrl(url: String): Boolean = runCatching {
+        val host = URI(url).host ?: return false
+        host == "localhost" ||
+        host == "127.0.0.1" ||
+        host == "::1" ||
+        host.endsWith(".local") ||
+        host.matches(Regex("""^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$""")) ||
+        host.matches(Regex("""^172\.(1[6-9]|2\d|30|31)\.\d{1,3}\.\d{1,3}$""")) ||
+        host.matches(Regex("""^192\.168\.\d{1,3}\.\d{1,3}$""")) ||
+        host.matches(Regex("""^169\.254\.\d{1,3}\.\d{1,3}$"""))
+    }.getOrDefault(false)
 
     // Hide the status/navigation bars for a full-screen kiosk view. STICKY so a
     // swipe only reveals them briefly, then they auto-hide. (Deprecated flags, but

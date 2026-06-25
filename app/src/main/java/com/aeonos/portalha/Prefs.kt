@@ -136,5 +136,20 @@ class Prefs(private val context: Context) {
         get() = sp.getBoolean("immich_frame_enabled", false)
         set(v) = sp.edit().putBoolean("immich_frame_enabled", v).apply()
 
+    // Random 16-hex token generated once per install, used as the MJPEG stream
+    // password (username "stream"). Completely independent of MQTT credentials —
+    // the stream stays protected even when MQTT is configured without auth.
+    // Share with Frigate as: http://stream:<token>@<device-ip>:8080/
+    val mjpegToken: String
+        get() {
+            val existing = sp.getString("mjpeg_token", null)
+            if (!existing.isNullOrBlank()) return existing
+            val bytes = ByteArray(8)
+            java.security.SecureRandom().nextBytes(bytes)
+            val token = bytes.joinToString("") { "%02x".format(it) }
+            sp.edit().putString("mjpeg_token", token).apply()
+            return token
+        }
+
     val brokerUri: String get() = "tcp://$brokerHost:$brokerPort"
 }
