@@ -7,8 +7,8 @@ It runs as a persistent background service plus an optional full-screen HA dashb
 > Unofficial, third-party project. Not affiliated with or endorsed by Meta.
 
 ---
-
-<script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="roadrunner1024" data-color="#FFDD00" data-emoji="🤖" data-font="Arial" data-text="Buy me some Claude tokens" data-outline-color="#000000" data-font-color="#000000" data-coffee-color="#ffffff" ></script>
+Buy me some Claude tokens here to support the project!
+<a href="https://www.buymeacoffee.com/roadrunner1024" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/arial-yellow.png" alt="Buy Me some Claude Tokens" style="height: 60px !important;width: 217px !important;" ></a>
 
 ## What you get in Home Assistant
 
