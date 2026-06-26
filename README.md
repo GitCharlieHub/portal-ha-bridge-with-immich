@@ -1,6 +1,6 @@
 # Portal HA Bridge
 
-Turn a **Meta Portal** into a fully-fledged **Home Assistant** device — screen control, camera streaming, motion & presence detection, ambient sensors, sound level, and more — all exposed automatically over **MQTT auto-discovery**.
+Turn a **Meta Portal** into a fully-fledged **Home Assistant** device — screen control, camera streaming, motion & presence detection, ambient sensors, sound level, and more — all exposed automatically over **MQTT auto-discovery**. It also turns your Portals into a **push-to-talk intercom** for each other.
 
 It runs as a persistent background service plus an optional full-screen HA dashboard (kiosk). Nothing is sent anywhere except your own MQTT broker and Home Assistant.
 
@@ -138,6 +138,22 @@ card:
 
 ---
 
+## Intercom (Portal-to-Portal announce)
+
+Talk between Portals on your network — hold a button, speak, and it plays out loud on the other Portal(s). It's audio-only and half-duplex ("push to announce"), and it rides the **same MQTT broker** you already use for Home Assistant, so nothing leaves your network. No Home Assistant configuration is needed — it's Portal-to-Portal. All Portals just need to point at the same broker, each with a distinct device name.
+
+- **Hold to Announce** — every dashboard's left-edge drawer has a Hold to Announce button with a target picker: **Everyone** (broadcast) or a **specific Portal**. Hold it, wait for the soft beep (the mic is live — "talk now"), and speak.
+- **Floating talk buttons** — optionally show always-on push-to-talk buttons on the dashboard. Create **as many as you like, each named and bound to its own target** (e.g. "Kitchen", "Office", "Everyone"). Double-tap a button to move it, then drag — it locks back into place when you let go.
+- **Appearance** — colour (hue / saturation / brightness, including grey), opacity, transparent background, and text colour are all configurable with a **live preview**, in **Settings → Intercom**.
+- **One at a time** — a network-wide speaking lock means only one Portal talks at once; the rest show "busy" until it's free (and it self-heals if a talker drops off).
+- **Volume** — incoming announcements play at a configurable level (Settings → Intercom).
+
+**Receive-only Portals.** A Portal can *send* only if a sideloaded app can get real-time microphone audio. On **Portal+** models, Meta's own always-on far-field mic / assistant holds the microphone, so those Portals are **receive-only** — they hear announcements but can't send them. Other Portals (the 10" Portal, Portal Mini, …) are full two-way. The app measures this automatically at startup and shows a note in **Settings → Intercom**; receive-only Portals simply disable their send controls.
+
+> Uses `RECORD_AUDIO` for the mic and (for the floating buttons) `SYSTEM_ALERT_WINDOW` — both already granted by the provisioner.
+
+---
+
 ## Presence detection
 
 The **Portal Presence** sensor doesn't run our own detection — it piggybacks on Meta's. `PresenceManager` (Aloha) runs face-presence detection on the Portal's *other* camera and logs a heartbeat (~every 30 s) **only while a person is present**, going silent when the room empties. The app tails logcat for that heartbeat: fresh beats = present, no beat for ~50 s = absent.
@@ -162,6 +178,7 @@ Plus an on-device idle timer (**Screen Timeout** / **…Minutes**) that sleeps t
 - **Camera aspect ratio** differs by Portal+ generation — `aloha` streams square (1:1, no config), `cipher` streams 480×640 and needs the one-line 4:3 SAR filter in the HA card. See [Portal+ camera aspect ratio](#portal-camera-aspect-ratio).
 - **Camera orientation**: both Portal+ models have a **fixed camera** (it doesn't pivot with the screen), so accelerometer auto-rotate is disabled for them and the stream uses a fixed rotation — upright out of the box (`aloha` rot 0, `cipher` rot 90), adjustable with the in-app **Rotate** button. Auto-rotate still applies to non-Portal+ models.
 - **Portal+ 2nd gen (`cipher`)**: its accelerometer is mounted on the **moving screen arm**, which heavily dampens taps — so the tap threshold is auto-scaled, the gesture is relabelled **"Tilt"**, and its dominant (Z) axis reports **up/down** instead of front/back. All automatic — no config.
+- **Intercom**: **Portal+** models are **receive-only** (Meta's always-on far-field mic holds the microphone); other Portals send and receive. Detected automatically — see [Intercom](#intercom-portal-to-portal-announce).
 
 ---
 
@@ -173,10 +190,10 @@ All ADB-granted (they can't be granted from the Portal UI). The provisioner (`pr
 |---|---|
 | `WRITE_SECURE_SETTINGS` | auto-enable the screen-sleep accessibility service |
 | `CAMERA` | streaming / motion |
-| `RECORD_AUDIO` | ambient sound-level sensor |
+| `RECORD_AUDIO` | ambient sound-level sensor + intercom microphone |
 | `READ_LOGS` | Portal presence sensor |
 | `WRITE_SETTINGS` (app-op) | read/set brightness |
-| `SYSTEM_ALERT_WINDOW` (app-op) | overlay → background camera access |
+| `SYSTEM_ALERT_WINDOW` (app-op) | background camera access + floating intercom buttons |
 
 ---
 
@@ -204,7 +221,10 @@ app/src/main/java/com/aeonos/portalha/
   CameraStream.kt       Camera capture for motion detection
   MotionDetector.kt     Frame-diff motion detection
   SensorBridge.kt       Light / RGB / temp / accelerometer / tap-tilt
-  SoundMonitor.kt       Ambient sound level (yields the mic during calls)
+  SoundMonitor.kt       Ambient sound level + shared warm mic for the intercom
+  Intercom.kt           Portal-to-Portal audio intercom (presence/lock/audio over MQTT)
+  IntercomOverlay.kt    Floating push-to-talk button (named, draggable)
+  IntercomSettingsActivity.kt / IntercomButtonsActivity.kt   Intercom config UI
   PresenceMonitor.kt    Tails Meta's PresenceManager heartbeat
   ScreenControl.kt / ScreenAccessibility.kt   Sleep/wake
   MediaKeepAlive.kt     Stops the launcher idle-kicking the app
