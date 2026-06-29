@@ -134,6 +134,18 @@ adb_cmd shell appops set "$PKG" SYSTEM_ALERT_WINDOW allow        # overlay -> ba
 adb_cmd shell appops set "$PKG" REQUEST_INSTALL_PACKAGES allow   # in-app "Check for Updates"
 printf "%s  set WRITE_SETTINGS + SYSTEM_ALERT_WINDOW + REQUEST_INSTALL_PACKAGES = allow%s\n" "$C_GREEN" "$C_OFF"
 
+# Installer-overlay fix -- Gen-1 Portal+ (API < 29) only.
+# Meta's com.facebook.aloha.rro.niu.android RRO overlay causes the stock
+# package-installer dialog to render white-on-white (invisible Install button).
+# Disabling it fixes the blank-installer issue; takes effect immediately, no
+# reboot required, and does not affect Shizuku.
+API="$(adb_cmd shell getprop ro.build.version.sdk 2>/dev/null | tr -d '\r')"
+if [ -n "$API" ] && [ "$API" -lt 29 ] 2>/dev/null; then
+  printf "%sGen-1 Portal+ detected (API %s) - disabling installer overlay...%s\n" "$C_CYAN" "$API" "$C_OFF"
+  adb_cmd shell cmd overlay disable com.facebook.aloha.rro.niu.android >/dev/null 2>&1
+  printf "%s  disabled com.facebook.aloha.rro.niu.android%s\n" "$C_GREEN" "$C_OFF"
+fi
+
 if [ "$SET_LAUNCHER" -eq 1 ]; then
   if adb_cmd shell pm list packages com.immortal.launcher 2>/dev/null | grep -q com.immortal.launcher; then
     adb_cmd shell cmd package set-home-activity com.immortal.launcher/com.immortal.launcher.HomeActivity >/dev/null 2>&1
@@ -166,6 +178,13 @@ if adb_cmd shell settings get secure enabled_accessibility_services 2>/dev/null 
   printf "  %-22s %sOK%s\n" "ScreenAccessibility" "$C_GREEN" "$C_OFF"
 else
   printf "  %-22s %snot yet - relaunch app%s\n" "ScreenAccessibility" "$C_YEL" "$C_OFF"
+fi
+if [ -n "$API" ] && [ "$API" -lt 29 ] 2>/dev/null; then
+  if adb_cmd shell cmd overlay list 2>/dev/null | tr -d '\r' | grep -qF '[ ] com.facebook.aloha.rro.niu.android'; then
+    printf "  %-22s %sOK (disabled)%s\n" "InstallerOverlay" "$C_GREEN" "$C_OFF"
+  else
+    printf "  %-22s %sSTILL ENABLED%s\n" "InstallerOverlay" "$C_RED" "$C_OFF"
+  fi
 fi
 
 printf "\n%sDone.%s\n" "$C_CYAN" "$C_OFF"

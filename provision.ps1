@@ -140,6 +140,18 @@ Adb shell "appops set $pkg SYSTEM_ALERT_WINDOW allow"       # overlay -> backgro
 Adb shell "appops set $pkg REQUEST_INSTALL_PACKAGES allow"  # in-app "Check for Updates"
 Write-Host "  set WRITE_SETTINGS + SYSTEM_ALERT_WINDOW + REQUEST_INSTALL_PACKAGES = allow" -ForegroundColor Green
 
+# Installer-overlay fix -- Gen-1 Portal+ (API < 29) only.
+# Meta's com.facebook.aloha.rro.niu.android RRO overlay causes the stock
+# package-installer dialog to render white-on-white (invisible Install button).
+# Disabling it fixes the blank-installer issue; takes effect immediately, no
+# reboot required, and does not affect Shizuku.
+$api = ([string](Adb shell "getprop ro.build.version.sdk")).Trim()
+if ($api -and ([int]$api -lt 29)) {
+    Write-Host "Gen-1 Portal+ detected (API $api) - disabling installer overlay..." -ForegroundColor Cyan
+    Adb shell "cmd overlay disable com.facebook.aloha.rro.niu.android" | Out-Null
+    Write-Host "  disabled com.facebook.aloha.rro.niu.android" -ForegroundColor Green
+}
+
 if ($SetLauncher) {
     $immortal = "com.immortal.launcher/com.immortal.launcher.HomeActivity"
     if ((Adb shell "pm list packages com.immortal.launcher") -match "com.immortal.launcher") {
@@ -170,5 +182,10 @@ Write-Host ("  {0,-22} {1}" -f "SYSTEM_ALERT_WINDOW", $(if ($saw) {"OK"} else {"
 Write-Host ("  {0,-22} {1}" -f "WRITE_SETTINGS", $(if ($ws) {"OK"} else {"MISSING"})) -ForegroundColor $(if ($ws) {"Green"} else {"Red"})
 $acc = (Adb shell "settings get secure enabled_accessibility_services") -match "portalha"
 Write-Host ("  {0,-22} {1}" -f "ScreenAccessibility", $(if ($acc) {"OK"} else {"not yet - relaunch app"})) -ForegroundColor $(if ($acc) {"Green"} else {"Yellow"})
+if ($api -and ([int]$api -lt 29)) {
+    $overlayOut = (Adb shell "cmd overlay list") -join "`n"
+    $overlayOk = $overlayOut -match '\[ \].*com\.facebook\.aloha\.rro\.niu\.android'
+    Write-Host ("  {0,-22} {1}" -f "InstallerOverlay", $(if ($overlayOk) {"OK (disabled)"} else {"STILL ENABLED"})) -ForegroundColor $(if ($overlayOk) {"Green"} else {"Red"})
+}
 
 Write-Host "`nDone." -ForegroundColor Cyan
