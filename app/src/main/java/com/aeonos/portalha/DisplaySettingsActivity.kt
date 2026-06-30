@@ -177,11 +177,9 @@ class DisplaySettingsActivity : AppCompatActivity() {
     }
 
     private fun saveWakePhrase() {
-        val phrase = etWakePhrase.text.toString().trim().ifEmpty { "hey jarvis" }
-        if (phrase != prefs.wakePhrase) {
-            prefs.wakePhrase = phrase
-            BridgeService.applyDisplaySettings(this)
-        }
+        val before = prefs.wakePhrase
+        prefs.wakePhrase = etWakePhrase.text.toString()   // setter trims + enforces the "hey " prefix
+        if (prefs.wakePhrase != before) BridgeService.applyDisplaySettings(this)
     }
 
     private fun updateUi() {

@@ -63,6 +63,14 @@ class Prefs(private val context: Context) {
         get() = sp.getFloat("tap_threshold", 4.0f)
         set(v) = sp.edit().putFloat("tap_threshold", v).apply()
 
+    // Gen-1 Portal+ (API 28) renders Meta's PackageInstaller dialog white-on-white;
+    // the updater flips on "high contrast text" around the install to make it
+    // legible (see Updater). This remembers the user's prior value to restore
+    // afterwards. -1 = nothing pending.
+    var highContrastRestore: Int
+        get() = sp.getInt("high_contrast_restore", -1)
+        set(v) = sp.edit().putInt("high_contrast_restore", v).apply()
+
     // Camera feature toggles. The legacy "camera_enabled" key seeds the defaults
     // so existing installs keep their behavior after upgrading.
     var motionEnabled: Boolean
@@ -151,9 +159,17 @@ class Prefs(private val context: Context) {
         get() = sp.getBoolean("wake_word_enabled", false)
         set(v) = sp.edit().putBoolean("wake_word_enabled", v).apply()
 
+    // Always prefaced with "hey" — a bare keyword false-triggers far too easily
+    // (see WakeWordDetector), so we enforce the "hey <word(s)>" form regardless of
+    // what the user types ("jarvis" and "hey jarvis" both store as "hey jarvis").
     var wakePhrase: String
         get() = sp.getString("wake_phrase", "hey jarvis") ?: "hey jarvis"
-        set(v) = sp.edit().putString("wake_phrase", v.trim().ifEmpty { "hey jarvis" }).apply()
+        set(v) {
+            var s = v.trim().lowercase()
+            while (s.startsWith("hey ")) s = s.substring(4).trim()   // drop leading "hey" the user typed
+            val phrase = if (s.isEmpty() || s == "hey") "hey jarvis" else "hey $s"
+            sp.edit().putString("wake_phrase", phrase).apply()
+        }
 
     // Assistant package the wake handoff broadcast targets (portal-wake's contract).
     var wakeAssistantPackage: String

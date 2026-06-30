@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
@@ -83,6 +84,44 @@ object Updater {
 
     fun canInstall(context: Context): Boolean =
         context.packageManager.canRequestPackageInstalls()
+
+    // --- Gen-1 Portal+ white-installer workaround ----------------------------
+    // On Gen-1 Portal+ (aloha, API 28) Meta's RRO theme overlay renders the
+    // PackageInstaller "Update?" dialog white-on-white, so the Install/Cancel
+    // controls are invisible. We can't durably disable that overlay (it re-enables
+    // on every reboot), but turning on the system "high contrast text" accessibility
+    // setting makes the dialog legible. So we flip it on right before the installer
+    // appears and restore the user's prior value once the install finishes.
+    //
+    // Needs WRITE_SECURE_SETTINGS, which the provisioner already grants for screen
+    // sleep; if it isn't held this just no-ops and we fall back to the raw dialog.
+    private const val HC_KEY = "high_text_contrast_enabled"
+
+    fun enableInstallerContrast(context: Context) {
+        if (Build.VERSION.SDK_INT >= 29) return   // white-installer bug is Gen-1 (API 28) only
+        runCatching {
+            val cr = context.contentResolver
+            val prev = Settings.Secure.getInt(cr, HC_KEY, 0)
+            Prefs(context).highContrastRestore = prev
+            Settings.Secure.putInt(cr, HC_KEY, 1)
+            Log.i(TAG, "update: high-contrast text ON for installer (prev=$prev)")
+        }.onFailure { Log.w(TAG, "update: high-contrast set failed: ${it.message}") }
+    }
+
+    // Restore the pre-install high-contrast value. Safe to call repeatedly — it
+    // no-ops once there's nothing pending. Driven from the install receiver's
+    // terminal statuses, plus MainActivity.onResume as a safety net for the
+    // self-update case where our process is killed before the receiver runs.
+    fun restoreInstallerContrast(context: Context) {
+        val prefs = Prefs(context)
+        val prev = prefs.highContrastRestore
+        if (prev < 0) return
+        runCatching {
+            Settings.Secure.putInt(context.contentResolver, HC_KEY, prev)
+            Log.i(TAG, "update: high-contrast text restored to $prev")
+        }.onFailure { Log.w(TAG, "update: high-contrast restore failed: ${it.message}") }
+        prefs.highContrastRestore = -1
+    }
 
     // Hand the downloaded APK to PackageInstaller; the system prompts to install.
     fun install(context: Context, apk: File) {

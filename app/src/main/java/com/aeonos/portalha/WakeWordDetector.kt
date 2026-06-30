@@ -43,13 +43,22 @@ class WakeWordDetector(
     }
 
     @Volatile var phrase: String = "hey jarvis"
-    private val keyword get() = phrase.trim().lowercase().substringAfterLast(' ').ifEmpty { "jarvis" }
+    // The recognizer is constrained to — and a match requires — the WHOLE phrase
+    // ("hey jarvis"). Matching only the last word ("jarvis") let ordinary speech
+    // false-trigger: a one-word grammar maps almost any utterance onto that single
+    // keyword, so the assistant's own spoken reply kept re-firing the wake.
+    private val target get() = phrase.trim().lowercase().ifEmpty { "hey jarvis" }
 
     private val running = AtomicBoolean(false)
     @Volatile private var ready = false
     private val queue = ArrayBlockingQueue<ShortArray>(QUEUE_FRAMES)
     private var worker: Thread? = null
     private var lastFireMs = 0L
+
+    // Matches are ignored until this time. The service sets it briefly after a handoff
+    // so the assistant's reply (echoed back through the mic) can't immediately re-fire.
+    @Volatile private var ignoreUntilMs = 0L
+    fun pauseMatching(ms: Long) { ignoreUntilMs = System.currentTimeMillis() + ms }
 
     fun isRunning() = running.get()
 
@@ -79,14 +88,14 @@ class WakeWordDetector(
             Log.w(TAG, "wake: model unavailable — wake word disabled")
             running.set(false); return
         }
-        val grammar = JSONArray(listOf(keyword, "[unk]")).toString()
+        val grammar = JSONArray(listOf(target, "[unk]")).toString()
         val recognizer = runCatching { Recognizer(model, SAMPLE_RATE, grammar) }.getOrNull()
         if (recognizer == null) {
             Log.w(TAG, "wake: could not create recognizer")
             runCatching { model.close() }; running.set(false); return
         }
         ready = true
-        Log.i(TAG, "wake: recognizer ready (keyword='$keyword')")
+        Log.i(TAG, "wake: recognizer ready (phrase='$target')")
         try {
             while (running.get()) {
                 val frame = queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
@@ -95,9 +104,9 @@ class WakeWordDetector(
                     if (end) JSONObject(recognizer.result).optString("text")
                     else JSONObject(recognizer.partialResult).optString("partial")
                 }.getOrDefault("")
-                if (text.lowercase().contains(keyword)) {
+                if (text.lowercase().contains(target)) {
                     val now = System.currentTimeMillis()
-                    if (now - lastFireMs >= FIRE_COOLDOWN_MS) {
+                    if (now >= ignoreUntilMs && now - lastFireMs >= FIRE_COOLDOWN_MS) {
                         lastFireMs = now
                         recognizer.reset()
                         queue.clear()

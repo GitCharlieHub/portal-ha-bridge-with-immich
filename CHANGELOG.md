@@ -4,6 +4,25 @@ All notable changes to Portal HA Bridge. Versions are the app `versionName`;
 the in-app updater (Settings → *Check for Updates*) and the provisioner both pull
 the latest GitHub release.
 
+## v1.14.0 — Wake-word false-trigger fix + readable updater dialog on Gen-1 Portal+
+
+**Fixed**
+- **Wake word no longer re-triggers itself after the assistant replies.** The
+  detector now requires the **whole phrase** ("hey jarvis"), not just the last word
+  — a one-word grammar mapped almost any speech onto the keyword, so the assistant's
+  own spoken reply kept re-firing the handoff. It also ignores matches for a few
+  seconds right after a handoff (so the reply echoed through the mic can't re-fire),
+  and editing the wake phrase now rebuilds the recognizer live instead of needing a
+  service restart. The phrase is always prefaced with **"Hey"** ("jarvis" and
+  "hey jarvis" both become "hey jarvis") — a bare keyword is what false-triggered.
+- **Self-update on Gen-1 Portal+ (Android 9) no longer shows a blank installer.**
+  Meta's RRO theme overlay renders the system "Update?" dialog white-on-white, so
+  the Install/Cancel buttons were invisible. The overlay can't be durably disabled
+  (it re-enables on every reboot), so instead the updater briefly turns on the
+  system **high-contrast text** setting just for the install — making the dialog
+  legible — and restores your previous setting once it finishes. No effect on
+  Android 10 Portals, which don't have the issue.
+
 ## v1.13.0 — On-device "hey jarvis" wake word (incl. Android 10)
 
 **Added**

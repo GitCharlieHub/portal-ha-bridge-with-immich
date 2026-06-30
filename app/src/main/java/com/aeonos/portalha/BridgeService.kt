@@ -139,6 +139,7 @@ class BridgeService : Service() {
     private var sensorBridge: SensorBridge? = null
     private var soundMonitor: SoundMonitor? = null
     private var wakeDetector: WakeWordDetector? = null
+    private var startedWakePhrase: String? = null   // phrase the live recognizer was built with
 
     // Portal-to-Portal intercom (audio-only push-to-announce) + optional overlays.
     private var intercom: Intercom? = null
@@ -261,7 +262,7 @@ class BridgeService : Service() {
         intercom?.probeTransmitCapability()   // ~1.1s, owns the mic while measuring
         Handler(Looper.getMainLooper()).postDelayed({
             if (!coexist) soundMonitor?.start()   // coexist = leave the mic for the assistant
-            if (p.wakeWordEnabled) wakeDetector?.start()
+            if (p.wakeWordEnabled) { wakeDetector?.start(); startedWakePhrase = p.wakePhrase }
             reconcileIntercomOverlays()
         }, 1_500L)
 
@@ -1127,6 +1128,9 @@ class BridgeService : Service() {
         micYieldedForWake = false
         wakeHandler.removeCallbacks(reclaimPoll)
         if (prefs?.wakeWordEnabled == true && soundMonitor?.isRunning() == false) soundMonitor?.start()
+        // The assistant may still be speaking its reply; ignore wake matches briefly so
+        // its audio (echoed back through the mic) can't immediately re-trigger the handoff.
+        wakeDetector?.pauseMatching(3_000L)
         // On Android 10+ we brought the assistant to the front to capture; the conversation
         // is over, so bring our dashboard back to the kiosk.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -1142,12 +1146,26 @@ class BridgeService : Service() {
     // needs our mic, so it ensures SoundMonitor is running (coexist is off when wake is
     // on — they're mutually exclusive). Idempotent via the isRunning() guards.
     private fun reconcileWake(p: Prefs) {
+        val phraseChanged = startedWakePhrase != null && startedWakePhrase != p.wakePhrase
         wakeDetector?.phrase = p.wakePhrase
         if (p.wakeWordEnabled) {
             if (soundMonitor?.isRunning() == false) soundMonitor?.start()
-            if (wakeDetector?.isRunning() == false) wakeDetector?.start()
+            if (wakeDetector?.isRunning() == false) {
+                wakeDetector?.start(); startedWakePhrase = p.wakePhrase
+            } else if (phraseChanged) {
+                // The grammar is fixed when the recognizer is created, so a new phrase
+                // needs a fresh recognizer. Stop now and restart after a short gap so the
+                // old decode thread has exited (it polls on a 200 ms timeout) before the
+                // new one starts — otherwise the two race on the running flag.
+                wakeDetector?.stop()
+                startedWakePhrase = p.wakePhrase
+                wakeHandler.postDelayed({
+                    if (prefs?.wakeWordEnabled == true) wakeDetector?.start()
+                }, 400L)
+            }
         } else if (wakeDetector?.isRunning() == true) {
             wakeDetector?.stop()
+            startedWakePhrase = null
         }
     }
 

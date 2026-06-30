@@ -19,10 +19,18 @@ class UpdateInstallReceiver : BroadcastReceiver() {
                 runCatching { context.startActivity(confirm) }
                     .onFailure { Log.w("PortalHA", "update: couldn't launch installer UI: ${it.message}") }
             }
-            PackageInstaller.STATUS_SUCCESS -> Log.i("PortalHA", "update: install succeeded")
-            else -> Log.w("PortalHA", "update: install status=" +
-                intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -1) + " " +
-                intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE))
+            PackageInstaller.STATUS_SUCCESS -> {
+                Updater.restoreInstallerContrast(context)
+                Log.i("PortalHA", "update: install succeeded")
+            }
+            else -> {
+                // Any other terminal status (failure/aborted/cancelled): undo the
+                // high-contrast toggle we set before showing the installer dialog.
+                Updater.restoreInstallerContrast(context)
+                Log.w("PortalHA", "update: install status=" +
+                    intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -1) + " " +
+                    intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE))
+            }
         }
     }
 }

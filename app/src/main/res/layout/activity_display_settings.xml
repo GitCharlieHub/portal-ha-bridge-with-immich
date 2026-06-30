@@ -169,6 +169,17 @@
                 android:layout_marginStart="12dp" />
         </LinearLayout>
 
+        <TextView
+            android:id="@+id/tv_wake_phrase_note"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Always starts with “Hey” (e.g. “hey jarvis”)."
+            android:textSize="12sp"
+            android:textColor="@color/onSurface"
+            android:alpha="0.6"
+            android:layout_marginTop="-16dp"
+            android:layout_marginBottom="24dp" />
+
         <!-- Screen Off Timer -->
         <Switch
             android:id="@+id/sw_screen_timeout"

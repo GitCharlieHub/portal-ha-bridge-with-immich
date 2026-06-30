@@ -158,7 +158,11 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 btn.isEnabled = true; btn.text = "Check for Updates"
                 r.onSuccess {
+                    // Make Meta's white-on-white installer legible on Gen-1 Portal+
+                    // (no-op on API 29+); restored after the install finishes.
+                    Updater.enableInstallerContrast(this)
                     runCatching { Updater.install(this, dest) }.onFailure {
+                        Updater.restoreInstallerContrast(this)
                         Toast.makeText(this, "Install failed: ${it.message}", Toast.LENGTH_LONG).show()
                     }
                 }.onFailure {
@@ -194,6 +198,9 @@ class MainActivity : AppCompatActivity() {
         BridgeService.start(this)
         BridgeService.ensureCamera(this)
         updateStatus()
+        // Safety net: if a self-update killed us before the install receiver could
+        // restore high-contrast text, undo it now (no-op when nothing is pending).
+        Updater.restoreInstallerContrast(this)
     }
 
 
