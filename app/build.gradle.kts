@@ -24,6 +24,12 @@ android {
         targetSdk = 35
         versionCode = 29
         versionName = "1.13.0"
+
+        // Portals are ARM — ship only ARM native libs (Vosk/RootEncoder bundle x86 +
+        // x86_64 + mips for emulators, ~20 MB of dead weight on real hardware).
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
     }
 
     buildFeatures {
