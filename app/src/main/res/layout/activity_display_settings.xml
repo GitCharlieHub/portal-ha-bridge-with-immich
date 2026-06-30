@@ -124,6 +124,51 @@
             android:textColor="@color/hint"
             android:layout_marginBottom="24dp" />
 
+        <!-- On-device wake word -->
+        <Switch
+            android:id="@+id/sw_wake"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="On-device wake word"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="@color/onSurface"
+            android:paddingVertical="12dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Listens for the wake phrase on this Portal and hands off to your voice assistant (Jarvis) — for Android 10 Portals where an always-on external wake app can't hold the mic. Downloads a ~40 MB model on first enable. Mutually exclusive with Coexist."
+            android:textSize="12sp"
+            android:textColor="@color/hint"
+            android:layout_marginBottom="8dp" />
+
+        <LinearLayout
+            android:id="@+id/row_wake_phrase"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="24dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Wake phrase"
+                android:textSize="14sp"
+                android:textColor="@color/onSurface" />
+
+            <EditText
+                android:id="@+id/et_wake_phrase"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:hint="hey jarvis"
+                android:inputType="text"
+                android:textColor="@color/onSurface"
+                android:layout_marginStart="12dp" />
+        </LinearLayout>
+
         <!-- Screen Off Timer -->
         <Switch
             android:id="@+id/sw_screen_timeout"

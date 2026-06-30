@@ -19,6 +19,8 @@ class DisplaySettingsActivity : AppCompatActivity() {
     private lateinit var swPresence: Switch
     private lateinit var swEnhancedPresence: Switch
     private lateinit var swCoexist: Switch
+    private lateinit var swWake: Switch
+    private lateinit var etWakePhrase: EditText
     private lateinit var seekPresenceSound: SeekBar
     private lateinit var tvPresenceSound: TextView
     private lateinit var swTimeout: Switch
@@ -53,6 +55,8 @@ class DisplaySettingsActivity : AppCompatActivity() {
         swPresence = findViewById(R.id.sw_presence)
         swEnhancedPresence = findViewById(R.id.sw_enhanced_presence)
         swCoexist = findViewById(R.id.sw_coexist)
+        swWake = findViewById(R.id.sw_wake)
+        etWakePhrase = findViewById(R.id.et_wake_phrase)
         seekPresenceSound = findViewById(R.id.seek_presence_sound)
         tvPresenceSound = findViewById(R.id.tv_presence_sound)
         swTimeout = findViewById(R.id.sw_screen_timeout)
@@ -66,7 +70,7 @@ class DisplaySettingsActivity : AppCompatActivity() {
         findViewById<View>(R.id.section_temp).visibility = if (hasTempSensor) View.VISIBLE else View.GONE
         etTempOffset.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) saveTempOffset() }
 
-        findViewById<Button>(R.id.btn_back).setOnClickListener { saveMinutes(); saveTempOffset(); finish() }
+        findViewById<Button>(R.id.btn_back).setOnClickListener { saveMinutes(); saveTempOffset(); saveWakePhrase(); finish() }
 
         swPresence.setOnCheckedChangeListener { _, checked ->
             if (checked == prefs.presenceEnabled) return@setOnCheckedChangeListener
@@ -88,6 +92,7 @@ class DisplaySettingsActivity : AppCompatActivity() {
         swCoexist.setOnCheckedChangeListener { _, checked ->
             if (checked == prefs.coexistVoiceAssistant) return@setOnCheckedChangeListener
             prefs.coexistVoiceAssistant = checked
+            if (checked && prefs.wakeWordEnabled) prefs.wakeWordEnabled = false   // mutually exclusive
             BridgeService.applyDisplaySettings(this)
             updateUi()
             Toast.makeText(this,
@@ -95,6 +100,19 @@ class DisplaySettingsActivity : AppCompatActivity() {
                 else "Mic reclaimed — sound sensor on",
                 Toast.LENGTH_SHORT).show()
         }
+
+        swWake.setOnCheckedChangeListener { _, checked ->
+            if (checked == prefs.wakeWordEnabled) return@setOnCheckedChangeListener
+            prefs.wakeWordEnabled = checked
+            if (checked && prefs.coexistVoiceAssistant) prefs.coexistVoiceAssistant = false   // mutually exclusive
+            BridgeService.applyDisplaySettings(this)
+            updateUi()
+            Toast.makeText(this,
+                if (checked) "Wake word on — model downloads on first use, then say your phrase"
+                else "Wake word off",
+                Toast.LENGTH_SHORT).show()
+        }
+        etWakePhrase.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) saveWakePhrase() }
 
         seekPresenceSound.progress = prefs.presenceSoundThreshold
         tvPresenceSound.text = soundLabel(prefs.presenceSoundThreshold)
@@ -131,6 +149,7 @@ class DisplaySettingsActivity : AppCompatActivity() {
         super.onPause()
         saveMinutes()
         saveTempOffset()
+        saveWakePhrase()
         prefs.unregisterListener(prefsListener)
         levelHandler.removeCallbacks(levelPoll)
     }
@@ -157,6 +176,14 @@ class DisplaySettingsActivity : AppCompatActivity() {
         }
     }
 
+    private fun saveWakePhrase() {
+        val phrase = etWakePhrase.text.toString().trim().ifEmpty { "hey jarvis" }
+        if (phrase != prefs.wakePhrase) {
+            prefs.wakePhrase = phrase
+            BridgeService.applyDisplaySettings(this)
+        }
+    }
+
     private fun updateUi() {
         swPresence.isChecked = prefs.presenceEnabled
         swTimeout.isChecked = prefs.screenTimeoutEnabled
@@ -165,6 +192,17 @@ class DisplaySettingsActivity : AppCompatActivity() {
         findViewById<View>(R.id.row_timeout_mins).alpha = if (prefs.screenTimeoutEnabled) 1f else 0.4f
 
         swCoexist.isChecked = prefs.coexistVoiceAssistant
+
+        // Wake word & coexist are mutually exclusive (wake needs our mic; coexist gives
+        // it to an external app). Grey out whichever the other one disables.
+        swWake.isChecked = prefs.wakeWordEnabled
+        if (!etWakePhrase.hasFocus() && etWakePhrase.text.toString() != prefs.wakePhrase)
+            etWakePhrase.setText(prefs.wakePhrase)
+        findViewById<View>(R.id.row_wake_phrase).alpha = if (prefs.wakeWordEnabled) 1f else 0.4f
+        swWake.isEnabled = !prefs.coexistVoiceAssistant
+        swWake.alpha = if (prefs.coexistVoiceAssistant) 0.4f else 1f
+        swCoexist.isEnabled = !prefs.wakeWordEnabled
+        swCoexist.alpha = if (prefs.wakeWordEnabled) 0.4f else 1f
 
         // Enhanced (sound) presence needs the mic — and only applies while presence
         // detection is on — so it's unavailable while coexisting with an assistant.

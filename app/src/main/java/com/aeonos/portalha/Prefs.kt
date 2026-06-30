@@ -142,6 +142,24 @@ class Prefs(private val context: Context) {
         get() = sp.getBoolean("coexist_voice_assistant", false)
         set(v) = sp.edit().putBoolean("coexist_voice_assistant", v).apply()
 
+    // On-device wake word ("hey jarvis"): we run a Vosk recognizer on our own warm mic
+    // and, on a match, fire the assistant's wake handoff — so hands-free works on
+    // Android 10 Portals without an external wake app. The phrase is editable (Vosk
+    // grammar, no new model). Mutually exclusive with coexistVoiceAssistant (that hands
+    // the mic to an EXTERNAL wake app; this IS our own).
+    var wakeWordEnabled: Boolean
+        get() = sp.getBoolean("wake_word_enabled", false)
+        set(v) = sp.edit().putBoolean("wake_word_enabled", v).apply()
+
+    var wakePhrase: String
+        get() = sp.getString("wake_phrase", "hey jarvis") ?: "hey jarvis"
+        set(v) = sp.edit().putString("wake_phrase", v.trim().ifEmpty { "hey jarvis" }).apply()
+
+    // Assistant package the wake handoff broadcast targets (portal-wake's contract).
+    var wakeAssistantPackage: String
+        get() = sp.getString("wake_assistant_pkg", "com.portal.assistant") ?: "com.portal.assistant"
+        set(v) = sp.edit().putString("wake_assistant_pkg", v.trim().ifEmpty { "com.portal.assistant" }).apply()
+
     // On-device screen-off timer (independent of HA). When enabled, the screen
     // sleeps after this many minutes with no presence / no wake. Disabled = the
     // screen stays on indefinitely.

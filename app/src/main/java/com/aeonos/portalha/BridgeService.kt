@@ -7,6 +7,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.AudioManager
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
@@ -137,6 +138,7 @@ class BridgeService : Service() {
     private var audioReceiver: BroadcastReceiver? = null
     private var sensorBridge: SensorBridge? = null
     private var soundMonitor: SoundMonitor? = null
+    private var wakeDetector: WakeWordDetector? = null
 
     // Portal-to-Portal intercom (audio-only push-to-announce) + optional overlays.
     private var intercom: Intercom? = null
@@ -241,14 +243,17 @@ class BridgeService : Service() {
                 recomputePresence(p)
             }
         }
-        // Coexist with an external voice assistant: release the mic — don't run the
-        // continuous SoundMonitor, and have the intercom capture on-demand instead.
-        val coexist = p.coexistVoiceAssistant
+        // Coexist with an external voice assistant: release the mic. Our own wake word
+        // (wakeDetector) needs the mic, so the two are mutually exclusive — wake wins.
+        val coexist = p.coexistVoiceAssistant && !p.wakeWordEnabled
         intercom = Intercom(this, p.deviceId, { prefs?.deviceName ?: "Portal" }, { localIp() }, ::publishBytes)
             .also {
                 it.attachSoundMonitor(if (coexist) null else soundMonitor)
                 it.setOnDemandCapture(coexist)
             }
+        // On-device "hey jarvis": fed the warm mic, fires the assistant wake handoff.
+        wakeDetector = WakeWordDetector(this) { fireWakeHandoff() }.also { it.phrase = p.wakePhrase }
+        soundMonitor?.wakeSink = { buf, n -> wakeDetector?.feed(buf, n) }
         instance = this
 
         // Measure mic capability first (it owns the mic briefly), then start the
@@ -256,6 +261,7 @@ class BridgeService : Service() {
         intercom?.probeTransmitCapability()   // ~1.1s, owns the mic while measuring
         Handler(Looper.getMainLooper()).postDelayed({
             if (!coexist) soundMonitor?.start()   // coexist = leave the mic for the assistant
+            if (p.wakeWordEnabled) wakeDetector?.start()
             reconcileIntercomOverlays()
         }, 1_500L)
 
@@ -350,6 +356,7 @@ class BridgeService : Service() {
             commandExecutor.submit {
                 runCatching {
                     applyCoexist(p)
+                    reconcileWake(p)
                     reconcilePresence(p)
                     publishDisplayDiscovery(p)
                     publishDisplayStates(p)
@@ -372,6 +379,8 @@ class BridgeService : Service() {
         audioReceiver?.let { unregisterReceiver(it) }
         sensorBridge?.stop()
         soundMonitor?.stop()
+        wakeDetector?.stop()
+        wakeHandler.removeCallbacks(reclaimPoll); micYieldedForWake = false
         intercom?.release()
         hideIntercomOverlays()
         instance = null
@@ -1039,6 +1048,106 @@ class BridgeService : Service() {
             }
             publishRaw(HaDiscovery.soundDiscoveryTopic(p.deviceId),
                 HaDiscovery.soundConfigPayload(p.deviceId, p.deviceName), 1, retained = true)
+        }
+    }
+
+    // Wake word matched — fire portal-wake's public handoff broadcast so the assistant
+    // (Jarvis) wakes and takes the mic. We don't hand the mic back explicitly:
+    // SoundMonitor yields on its own (its reads fail while the assistant records, then
+    // it re-acquires when the assistant releases), and a cooldown blocks instant re-fire.
+    private fun fireWakeHandoff() {
+        val p = prefs ?: return
+        val id = p.wakePhrase.trim().lowercase().substringAfterLast(' ').ifEmpty { "jarvis" }
+        val pkg = p.wakeAssistantPackage
+        fun broadcastAndYield() {
+            runCatching {
+                sendBroadcast(Intent("com.portal.wake.action.WAKE")
+                    .setPackage(pkg).putExtra("com.portal.wake.extra.ID", id))
+                Log.i(TAG, "wake: fired handoff -> $pkg (id=$id)")
+            }.onFailure { Log.w(TAG, "wake: handoff failed: ${it.message}") }
+            yieldMicForWake()
+        }
+        // Android 10+ denies the mic to a foreground service started while the app is in
+        // the background, so the assistant hears silence when woken. Bring it to the
+        // foreground first (our SYSTEM_ALERT_WINDOW allows the background-activity-start),
+        // then start the conversation. Android 9 captures fine woken-in-background, so it
+        // stays subtle (no takeover) there.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            wakeHandler.post {
+                runCatching {
+                    packageManager.getLaunchIntentForPackage(pkg)
+                        ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        ?.let { startActivity(it); Log.i(TAG, "wake: brought $pkg to foreground") }
+                }.onFailure { Log.w(TAG, "wake: foreground launch failed: ${it.message}") }
+            }
+            wakeHandler.postDelayed({ broadcastAndYield() }, 600L)   // let the activity resume first
+        } else {
+            broadcastAndYield()
+        }
+    }
+
+    // After the wake fires, the assistant needs the mic but our SoundMonitor is holding
+    // it — so the assistant hears silence ("ignores you"). Release the mic now and
+    // reclaim once the assistant stops recording. We poll activeRecordingConfigurations
+    // (after a short settle so our own capture has stopped and the assistant has started):
+    // once we've SEEN a recording and it drops to none, the conversation is over. A long
+    // timeout always recovers in case the handoff never took.
+    @Volatile private var micYieldedForWake = false
+    @Volatile private var wakeConsumerSeen = false
+    @Volatile private var wakeYieldStartMs = 0L
+    private val wakeHandler = Handler(Looper.getMainLooper())
+    private val reclaimPoll = object : Runnable {
+        override fun run() {
+            if (!micYieldedForWake) return
+            val active = runCatching {
+                getSystemService(AudioManager::class.java)?.activeRecordingConfigurations?.size ?: 0
+            }.getOrDefault(0)
+            if (active > 0) wakeConsumerSeen = true
+            val elapsed = System.currentTimeMillis() - wakeYieldStartMs
+            if ((wakeConsumerSeen && active == 0) || elapsed > 120_000L) {
+                reclaimMicAfterWake(if (wakeConsumerSeen) "assistant done" else "timeout")
+            } else {
+                wakeHandler.postDelayed(this, 1_000L)
+            }
+        }
+    }
+
+    private fun yieldMicForWake() {
+        if (micYieldedForWake) return
+        micYieldedForWake = true
+        wakeConsumerSeen = false
+        wakeYieldStartMs = System.currentTimeMillis()
+        soundMonitor?.stop()        // free the mic; the wake detector idles on an empty queue
+        Log.i(TAG, "wake: yielded mic to assistant")
+        wakeHandler.postDelayed(reclaimPoll, 1_500L)   // settle, then watch for the assistant to finish
+    }
+
+    private fun reclaimMicAfterWake(reason: String) {
+        if (!micYieldedForWake) return
+        micYieldedForWake = false
+        wakeHandler.removeCallbacks(reclaimPoll)
+        if (prefs?.wakeWordEnabled == true && soundMonitor?.isRunning() == false) soundMonitor?.start()
+        // On Android 10+ we brought the assistant to the front to capture; the conversation
+        // is over, so bring our dashboard back to the kiosk.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                startActivity(Intent(this, DashboardActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+            }
+        }
+        Log.i(TAG, "wake: reclaimed mic ($reason)")
+    }
+
+    // Start/stop the wake detector to match the pref (live, from the apply path). Wake
+    // needs our mic, so it ensures SoundMonitor is running (coexist is off when wake is
+    // on — they're mutually exclusive). Idempotent via the isRunning() guards.
+    private fun reconcileWake(p: Prefs) {
+        wakeDetector?.phrase = p.wakePhrase
+        if (p.wakeWordEnabled) {
+            if (soundMonitor?.isRunning() == false) soundMonitor?.start()
+            if (wakeDetector?.isRunning() == false) wakeDetector?.start()
+        } else if (wakeDetector?.isRunning() == true) {
+            wakeDetector?.stop()
         }
     }
 

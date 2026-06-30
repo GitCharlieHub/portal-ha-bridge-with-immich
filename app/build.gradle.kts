@@ -22,8 +22,8 @@ android {
         // 28 = Android 9 (Portal+); 29 = Android 10 (Portal / Portal Mini).
         minSdk = 28
         targetSdk = 35
-        versionCode = 28
-        versionName = "1.12.0"
+        versionCode = 29
+        versionName = "1.13.0"
     }
 
     buildFeatures {
@@ -69,4 +69,10 @@ dependencies {
     // build cleanly under our Kotlin 2.0.20 — no metadata hacks.
     implementation("com.github.pedroSG94:RTSP-Server:1.3.0")
     implementation("com.github.pedroSG94.RootEncoder:library:2.4.6")
+
+    // On-device wake word ("hey jarvis") — Vosk speech recognizer with a grammar
+    // limited to the wake phrase. Keyless/offline; the phrase is a config string, so
+    // the wake word is changeable without a new model. The ~40 MB model is downloaded
+    // to filesDir on first enable (keeps the APK small), not bundled.
+    implementation("com.alphacephei:vosk-android:0.3.75")
 }

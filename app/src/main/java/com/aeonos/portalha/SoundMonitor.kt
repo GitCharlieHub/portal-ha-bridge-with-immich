@@ -34,6 +34,10 @@ class SoundMonitor(
     // runs on the capture thread and must return promptly (pack + publish a frame).
     @Volatile var frameSink: ((buf: ShortArray, length: Int) -> Unit)? = null
 
+    // Continuous tap for the wake-word detector — fed every captured chunk while the
+    // mic is held (unlike frameSink, which is only attached during an intercom announce).
+    @Volatile var wakeSink: ((buf: ShortArray, length: Int) -> Unit)? = null
+
     fun isRunning() = running.get()
 
     fun start() {
@@ -106,6 +110,7 @@ class SoundMonitor(
                 val n = rec?.read(buf, 0, buf.size) ?: -1
                 if (n > 0) {
                     frameSink?.invoke(buf, n)   // forward to the intercom if announcing
+                    wakeSink?.invoke(buf, n)    // forward to the wake-word detector if enabled
                     for (i in 0 until n) sumSq += buf[i].toLong() * buf[i]
                     count += n
                     val now = System.currentTimeMillis()
