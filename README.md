@@ -2,7 +2,9 @@
 
 Turn a **Meta Portal** into a fully-fledged **Home Assistant** device — screen control, camera streaming, motion & presence detection, ambient sensors, sound level, and more — all exposed automatically over **MQTT auto-discovery**. It also turns your Portals into a **push-to-talk intercom** for each other.
 
-It runs as a persistent background service plus an optional full-screen HA dashboard (kiosk). Nothing is sent anywhere except your own MQTT broker and Home Assistant.
+It also plugs into a hands-free **voice assistant** ([portal-assistant / "Jarvis"](https://github.com/rudysev/portal-assistant)) so you can control the Portal *and your entire Home Assistant* by voice — see [Voice assistant](#voice-assistant-control-by-voice).
+
+It runs as a persistent background service plus an optional full-screen HA dashboard (kiosk). Nothing is sent anywhere except your own MQTT broker and Home Assistant (voice control additionally uses the assistant's own cloud model under your own key).
 
 > Unofficial, third-party project. Not affiliated with or endorsed by Meta.
 
@@ -66,7 +68,7 @@ chmod +x provision.sh
 ./provision.sh
 ```
 
-Both do the same thing — **nothing needs to be pre-installed**. The script downloads Google's platform-tools if `adb` isn't on your PATH, downloads and installs the latest release APK if the app isn't already on the device, grants every permission/app-op (all require ADB — they can't be granted from the Portal UI), auto-enables the screen-control accessibility service, and prints a green verification checklist.
+Both do the same thing — **nothing needs to be pre-installed**. The script downloads Google's platform-tools if `adb` isn't on your PATH, downloads and installs the latest release APK if the app isn't already on the device, grants every permission/app-op (all require ADB — they can't be granted from the Portal UI), auto-enables the screen-control accessibility service, and prints a green verification checklist. On **1st-gen Portal+ (Android 9)** it also disables a Meta display overlay that rendered the system installer dialog blank — so the **in-app updater** (Settings → *Check for Updates*) and sideloads are visible.
 
 | Flag (Windows / macOS+Linux) | Effect |
 |---|---|
@@ -74,6 +76,8 @@ Both do the same thing — **nothing needs to be pre-installed**. The script dow
 | `-Install` / `--install` | force a reinstall / update to the latest APK |
 | `-Apk <path>` / `--apk <path>` | install a specific APK instead of downloading |
 | `-SetLauncher` / `--set-launcher` | also set the immortal launcher as the kiosk home |
+| `-FreeAlohaMic` / `--free-mic` | free a 1st-gen Portal+ mic for **two-way intercom** (disables Meta's "Hey Alexa" detector; reversible) |
+| `-RestoreAlohaMic` / `--restore-mic` | undo `--free-mic` (re-enable "Hey Alexa") |
 | `-Serial <id>` / `--serial <id>` | target a specific device when several are attached |
 
 > Prefer to build it yourself? See [Building from source](#building-from-source) — the provisioner automatically uses your build output if it finds one.
@@ -148,9 +152,36 @@ Talk between Portals on your network — hold a button, speak, and it plays out 
 - **One at a time** — a network-wide speaking lock means only one Portal talks at once; the rest show "busy" until it's free (and it self-heals if a talker drops off).
 - **Volume** — incoming announcements play at a configurable level (Settings → Intercom).
 
-**Receive-only Portals.** A Portal can *send* only if a sideloaded app can get real-time microphone audio. On **Portal+** models, Meta's own always-on far-field mic / assistant holds the microphone, so those Portals are **receive-only** — they hear announcements but can't send them. Other Portals (the 10" Portal, Portal Mini, …) are full two-way. The app measures this automatically at startup and shows a note in **Settings → Intercom**; receive-only Portals simply disable their send controls.
+**Receive-only Portals.** A Portal can *send* only if a sideloaded app can get real-time microphone audio. On **Portal+** models, Meta's own always-on far-field mic / "Hey Alexa" detector can hold the microphone and throttle third-party capture, so an affected Portal is **receive-only** — it hears announcements but can't send them. The app measures this automatically at startup and shows a note in **Settings → Intercom**; receive-only Portals simply disable their send controls.
+
+> **Reclaim two-way on a 1st-gen Portal+:** run the provisioner with `--free-mic` (`-FreeAlohaMic`). It disables Meta's "Hey Alexa" wake detector (`com.millennium`), which frees the mic so the Portal can transmit too — without touching face-presence or Smart-Camera framing. Reversible with `--restore-mic`.
 
 > Uses `RECORD_AUDIO` for the mic and (for the floating buttons) `SYSTEM_ALERT_WINDOW` — both already granted by the provisioner.
+
+---
+
+## Voice assistant (control by voice)
+
+Portal HA Bridge plugs into **[portal-assistant](https://github.com/rudysev/portal-assistant)** ("Jarvis", a hands-free Gemini-powered assistant) as a **tool provider**, so you can control this Portal *and your entire Home Assistant* by voice — without modifying the assistant. Say **"Hey Jarvis, …"** (wake word via the companion [portal-wake](https://github.com/rudysev/portal-wake)):
+
+| Say something like | What happens |
+|---|---|
+| "turn off the screen" / "wake the screen" | sleeps / wakes this Portal's display |
+| "turn the camera on" | toggles the Portal's HA camera stream |
+| "is anyone home?" | reports the **Portal Presence** state |
+| "turn on Thea's light", "run the goodnight scene", "set the bedroom to 20°" | controls **any** Home Assistant device |
+
+It's implemented via the assistant's public `ToolContract` — an exported `ContentProvider` advertising function-calling tools (only the assistant package may invoke them). For Home Assistant it uses the REST API and can **discover any entity by name**, so it controls every device with **no need to expose entities to HA Assist**.
+
+### Setup
+1. Install **portal-assistant** (Jarvis) and **portal-wake** on the Portal (each has a one-click installer), and give Jarvis a free Gemini API key.
+2. In Jarvis → **Settings → External tools**, switch on **Portal HA Bridge**.
+3. Give the bridge a Home Assistant **long-lived access token** (HA → your profile → *Long-Lived Access Tokens*) so it can control HA — two ways:
+   - **From Home Assistant (recommended):** paste it into the **HA Token** entity that appears under the Portal device — no typing on the Portal, and you can do it for every Portal from HA.
+   - **On the device:** the *HA token* field in Settings, next to the HA URL.
+
+### Coexist with a voice assistant
+The Portal has a single microphone, and an always-on wake-word listener needs it continuously. Turn on **Coexist with voice assistant** (Settings → Display & Presence) and the bridge **releases the mic**: the **Sound Level** sensor and sound-based presence turn off, and the intercom captures on-demand only while you're announcing — so the assistant can hear "Hey Jarvis" the rest of the time. (Leave it off if you're not running an external wake-word app.)
 
 ---
 
@@ -185,7 +216,7 @@ Plus an on-device idle timer (**Screen Timeout** / **…Minutes**) that sleeps t
 - **Camera aspect ratio** differs by Portal+ generation — `aloha` streams square (1:1, no config), `cipher` streams 480×640 and needs the one-line 4:3 SAR filter in the HA card. See [Portal+ camera aspect ratio](#portal-camera-aspect-ratio).
 - **Camera orientation**: both Portal+ models have a **fixed camera** (it doesn't pivot with the screen), so accelerometer auto-rotate is disabled for them and the stream uses a fixed rotation — upright out of the box (`aloha` rot 0, `cipher` rot 90), adjustable with the in-app **Rotate** button. Auto-rotate still applies to non-Portal+ models.
 - **Portal+ 2nd gen (`cipher`)**: its accelerometer is mounted on the **moving screen arm**, which heavily dampens taps — so the tap threshold is auto-scaled, the gesture is relabelled **"Tilt"**, and its dominant (Z) axis reports **up/down** instead of front/back. All automatic — no config.
-- **Intercom**: **Portal+** models are **receive-only** (Meta's always-on far-field mic holds the microphone); other Portals send and receive. Detected automatically — see [Intercom](#intercom-portal-to-portal-announce).
+- **Intercom**: a **Portal+** held by Meta's always-on mic is **receive-only**; other Portals send and receive. Detected automatically. A 1st-gen Portal+ can be made two-way with the provisioner's `--free-mic` flag — see [Intercom](#intercom-portal-to-portal-announce).
 
 ---
 
@@ -230,6 +261,7 @@ app/src/main/java/com/aeonos/portalha/
   SensorBridge.kt       Light / RGB / temp / accelerometer / tap-tilt
   SoundMonitor.kt       Ambient sound level + shared warm mic for the intercom
   Intercom.kt           Portal-to-Portal audio intercom (presence/lock/audio over MQTT)
+  AssistantToolProvider.kt   Voice-assistant (Jarvis) tool provider: screen/camera/presence + Home Assistant control
   IntercomOverlay.kt    Floating push-to-talk button (named, draggable)
   IntercomSettingsActivity.kt / IntercomButtonsActivity.kt   Intercom config UI
   PresenceMonitor.kt    Tails Meta's PresenceManager heartbeat
@@ -242,6 +274,7 @@ app/src/main/java/com/aeonos/portalha/
 provision.ps1           One-shot device setup for Windows (install + permissions + launcher)
 provision.sh            One-shot device setup for macOS / Linux (same steps)
 SETUP.md                Detailed setup & MQTT topics
+CHANGELOG.md            Version history (features + bugfixes)
 ```
 
 ---
