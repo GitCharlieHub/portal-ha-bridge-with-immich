@@ -4,6 +4,20 @@ All notable changes to Portal HA Bridge. Versions are the app `versionName`;
 the in-app updater (Settings → *Check for Updates*) and the provisioner both pull
 the latest GitHub release.
 
+## v1.14.1 — Wake-word accuracy: confidence gating + contamination reject
+
+**Fixed**
+- **Far fewer wake-word false positives.** Ported the accuracy gates from
+  rudysev/portal-wake's on-device-tuned matcher: the detector now acts only on
+  **finalized** decodes (never unstable partials), uses **per-word confidence**
+  (`setWords`), and rejects any decode that is **contaminated** — i.e. contains
+  Vosk's `[unk]` token. A genuine close-mic "hey jarvis" decodes as a bare
+  `hey jarvis` with no `[unk]` and both words near 100% confidence; background
+  audio (TV, a nearby phone call) that assembles a wake shows up as
+  `[unk] hey jarvis` or with a weak "hey" — now rejected. Also requires the "hey"
+  lead in front of the keyword (≥80% confidence) and the keyword itself ≥60%, and
+  logs near-misses (`wake: near-miss […] (rejected)`) for tuning.
+
 ## v1.14.0 — Wake-word false-trigger fix + readable updater dialog on Gen-1 Portal+
 
 **Fixed**

@@ -36,11 +36,26 @@ class WakeWordDetector(
     companion object {
         private const val TAG = "PortalHA"
         private const val SAMPLE_RATE = 16000.0f
+        private const val FRAME_SAMPLES = 640                 // 40 ms @ 16 kHz
         private const val FIRE_COOLDOWN_MS = 3_000L
         private const val MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
         private const val MODEL_DIR = "vosk-model"            // unpacked model under filesDir
         private const val QUEUE_FRAMES = 50                   // ~2 s of 40 ms frames
+
+        // Accuracy gates, ported from rudysev/portal-wake's WakeMatcher (its on-device-tuned
+        // policy). A genuine close-mic "hey jarvis" decodes as a bare "hey jarvis" — no "[unk]",
+        // both words ~1.0 confidence. Background audio (TV, a nearby phone call) that assembles a
+        // wake shows up contaminated ("[unk] hey jarvis") or with a weak lead — these gates reject it.
+        private const val UNK_TOKEN = "[unk]"                 // grammar escape + contamination signal
+        private const val KEYWORD_MIN_CONF = 0.60             // "jarvis" must clear this
+        private const val LEAD_MIN_CONF = 0.80                // "hey" must clear this
+        private const val CLEAN_PHRASE_MAX_WORDS = 3          // a real wake is a short, clean phrase
+        private const val WARMUP_SILENCE_FRAMES = 25          // ~1 s of silence settles the decoder
+        private val LEAD_ALIASES = mapOf("hey" to setOf("hey", "hay"))   // Vosk mishears "hey" as "hay"
     }
+
+    /** One recognized word + its per-word confidence (−1 when the model gave no score). */
+    private data class RecWord(val word: String, val conf: Double)
 
     @Volatile var phrase: String = "hey jarvis"
     // The recognizer is constrained to — and a match requires — the WHOLE phrase
@@ -48,6 +63,11 @@ class WakeWordDetector(
     // false-trigger: a one-word grammar maps almost any utterance onto that single
     // keyword, so the assistant's own spoken reply kept re-firing the wake.
     private val target get() = phrase.trim().lowercase().ifEmpty { "hey jarvis" }
+    // keyword = the salient last word ("jarvis"); lead = the word before it ("hey"). Precision
+    // comes from requiring the lead in front of the keyword, not from the keyword alone.
+    private val words get() = target.split(' ').filter { it.isNotEmpty() }
+    private val keyword get() = words.lastOrNull() ?: "jarvis"
+    private val lead get() = if (words.size >= 2) words[words.size - 2] else null
 
     private val running = AtomicBoolean(false)
     @Volatile private var ready = false
@@ -88,31 +108,44 @@ class WakeWordDetector(
             Log.w(TAG, "wake: model unavailable — wake word disabled")
             running.set(false); return
         }
-        val grammar = JSONArray(listOf(target, "[unk]")).toString()
-        val recognizer = runCatching { Recognizer(model, SAMPLE_RATE, grammar) }.getOrNull()
+        // Grammar biases the decoder toward the wake phrase/keyword/lead; "[unk]" absorbs
+        // non-matching speech (so look-alikes aren't forced onto the wake) AND is the
+        // contamination signal the gate below rejects. setWords gives per-word confidence.
+        val entries = LinkedHashSet<String>().apply {
+            add(target); add(keyword); lead?.let { add(it) }; add(UNK_TOKEN)
+        }
+        val grammar = JSONArray(entries.toList()).toString()
+        val recognizer = runCatching { Recognizer(model, SAMPLE_RATE, grammar) }
+            .getOrElse { runCatching { Recognizer(model, SAMPLE_RATE) }.getOrNull() }
         if (recognizer == null) {
             Log.w(TAG, "wake: could not create recognizer")
             runCatching { model.close() }; running.set(false); return
         }
+        runCatching { recognizer.setWords(true) }
+        warmUp(recognizer)          // settle the decoder so the first "hey" isn't dropped
         ready = true
-        Log.i(TAG, "wake: recognizer ready (phrase='$target')")
+        Log.i(TAG, "wake: recognizer ready (phrase='$target', keyword='$keyword', lead='$lead')")
         try {
             while (running.get()) {
                 val frame = queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
-                val end = recognizer.acceptWaveForm(frame, frame.size)
-                val text = runCatching {
-                    if (end) JSONObject(recognizer.result).optString("text")
-                    else JSONObject(recognizer.partialResult).optString("partial")
-                }.getOrDefault("")
-                if (text.lowercase().contains(target)) {
+                // Only evaluate FINALIZED decodes — partial results are unstable and were a
+                // major false-positive source. acceptWaveForm returns true at end-of-utterance.
+                if (!recognizer.acceptWaveForm(frame, frame.size)) continue
+                val rec = parseResult(recognizer.result)
+                if (rec.isEmpty()) continue
+                if (isWake(rec)) {
                     val now = System.currentTimeMillis()
                     if (now >= ignoreUntilMs && now - lastFireMs >= FIRE_COOLDOWN_MS) {
                         lastFireMs = now
+                        Log.i(TAG, "wake: matched [${render(rec)}] -> firing")
                         recognizer.reset()
+                        warmUp(recognizer)
                         queue.clear()
-                        Log.i(TAG, "wake: matched '$text' -> firing")
                         runCatching { onWake() }
                     }
+                } else if (rec.any { it.word == keyword }) {
+                    // Keyword decoded but a gate rejected it — log the near-miss for tuning.
+                    Log.i(TAG, "wake: near-miss [${render(rec)}] (rejected)")
                 }
             }
         } catch (e: Exception) {
@@ -122,6 +155,53 @@ class WakeWordDetector(
             runCatching { recognizer.close() }
             runCatching { model.close() }
             Log.i(TAG, "wake: stopped")
+        }
+    }
+
+    // Parse a Vosk final-result JSON into (word, confidence). Prefers the per-word "result"
+    // array (from setWords); falls back to the plain transcript with unknown confidence (-1).
+    private fun parseResult(json: String): List<RecWord> {
+        val obj = runCatching { JSONObject(json) }.getOrNull() ?: return emptyList()
+        val arr = obj.optJSONArray("result")
+        if (arr != null && arr.length() > 0) {
+            return (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                RecWord(o.optString("word").lowercase(), o.optDouble("conf", -1.0))
+            }
+        }
+        val text = obj.optString("text").trim()
+        if (text.isEmpty()) return emptyList()
+        return text.lowercase().split(Regex("\\s+")).map { RecWord(it, -1.0) }
+    }
+
+    // The wake decision (single-phrase port of portal-wake's strict route): the keyword must be
+    // present, preceded by a confident lead, in a short phrase with NO "[unk]" contamination.
+    private fun isWake(rec: List<RecWord>): Boolean {
+        val kw = keyword
+        val i = rec.indexOfLast { it.word == kw }
+        if (i < 0) return false
+        if (rec.any { it.word == UNK_TOKEN }) return false                     // contamination → reject
+        if (rec.size > CLEAN_PHRASE_MAX_WORDS) return false                    // must be a clean phrase
+        val leads = lead?.let { LEAD_ALIASES[it] ?: setOf(it) }
+        if (leads != null) {                                                   // confident lead in front
+            val before = rec.subList(0, i)
+            if (before.none { it.word in leads && (it.conf < 0 || it.conf >= LEAD_MIN_CONF) }) return false
+        }
+        if (rec[i].conf >= 0.0 && rec[i].conf < KEYWORD_MIN_CONF) return false  // keyword over its floor
+        return true
+    }
+
+    /** Render a decode as `word(conf%)` tokens for the fire / near-miss logs. */
+    private fun render(rec: List<RecWord>): String =
+        rec.joinToString(" ") { if (it.conf < 0) it.word else "${it.word}(${(it.conf * 100).toInt()})" }
+
+    /** Feed ~1 s of silence so Kaldi's online decoder settles — otherwise the first "hey" after a
+     *  (re)start or a reset is dropped, causing "no 'hey'" near-misses. Does NOT reset afterward
+     *  (that would undo the settling); the trailing silence is harmless in the next utterance. */
+    private fun warmUp(rec: Recognizer) {
+        runCatching {
+            val silence = ShortArray(FRAME_SAMPLES)
+            repeat(WARMUP_SILENCE_FRAMES) { rec.acceptWaveForm(silence, silence.size) }
         }
     }
 
