@@ -45,6 +45,7 @@ class Intercom(
         private const val TAG = "PortalHA"
         const val PRESENCE_PREFIX = "portal/intercom/presence/"
         const val LOCK_TOPIC = "portal/intercom/lock"
+        const val TWOWAY_TOPIC = "portal/intercom/twoway"     // retained: "<initiator>|<ts>" = open, empty = closed
         const val AUDIO_PREFIX = "portal/intercom/audio/"     // + "<sender>/<target>"
 
         private const val SAMPLE_RATE = 16000
@@ -90,6 +91,33 @@ class Intercom(
     }
 
     fun isTalking() = txRunning.get()
+
+    // ── Two-way floor (experimental) ─────────────────────────────────────────
+    // First-come speaking floor for the 2-way channel: acquire the same lock a normal
+    // announce uses (so only ONE Portal transmits at a time — no mixing), stream frames,
+    // release. Driven by TwoWayEngine (VOX) or a tap-to-talk button.
+    @Volatile var twoWayEnabled = false   // set from prefs; a broadcast announce then auto-opens the channel
+    private var floorTopic = ""
+    private var floorRefreshMs = 0L
+    fun floorAcquire(): Boolean {
+        if (!canTransmit() || busySpeakerName() != null) return false
+        acquireLock()
+        floorTopic = "$AUDIO_PREFIX$deviceId/all"
+        floorRefreshMs = System.currentTimeMillis()
+        return true
+    }
+    fun floorSend(buf: ShortArray, n: Int) {
+        if (floorTopic.isEmpty()) return
+        val out = ByteArray(n * 2); var bi = 0
+        for (i in 0 until n) {
+            val v = buf[i].toInt()
+            out[bi++] = (v and 0xff).toByte(); out[bi++] = ((v shr 8) and 0xff).toByte()
+        }
+        publish(floorTopic, out, 0, false)
+        val now = System.currentTimeMillis()
+        if (now - floorRefreshMs >= LOCK_REFRESH_MS) { acquireLock(); floorRefreshMs = now }
+    }
+    fun floorRelease() { if (floorTopic.isNotEmpty()) { releaseLock(); floorTopic = "" } }
 
     // Whether this Portal can SEND. Determined once at startup by measuring the
     // real capture rate (see probeTransmitCapability). Optimistic until probed so
@@ -167,6 +195,7 @@ class Intercom(
     fun subscriptions(): List<Pair<String, Int>> = listOf(
         "${PRESENCE_PREFIX}+" to 1,
         LOCK_TOPIC to 1,
+        TWOWAY_TOPIC to 1,
         "${AUDIO_PREFIX}+/+" to 0
     )
 
@@ -190,6 +219,7 @@ class Intercom(
         when {
             topic.startsWith(PRESENCE_PREFIX) -> handlePresence(topic, payload)
             topic == LOCK_TOPIC -> handleLock(payload)
+            topic == TWOWAY_TOPIC -> handleTwoWay(payload)
             topic.startsWith(AUDIO_PREFIX) -> handleAudio(topic, payload)
             else -> return false
         }
@@ -219,6 +249,24 @@ class Intercom(
         lockTs = parts.getOrNull(2)?.toLongOrNull() ?: System.currentTimeMillis()
     }
 
+    // ── Two-way channel signaling ────────────────────────────────────────────
+    // Retained "<initiator>|<ts>" = channel OPEN; empty = closed. Any Portal can open or
+    // close it; every Portal auto-arms/disarms its hands-free engine off this one signal.
+    @Volatile var onTwoWayChannel: ((open: Boolean, initiator: String) -> Unit)? = null
+    @Volatile private var twoWayOpen = false
+    fun isTwoWayChannelOpen() = twoWayOpen
+    private fun handleTwoWay(payload: ByteArray) {
+        val open = payload.isNotEmpty()
+        if (open == twoWayOpen) return
+        twoWayOpen = open
+        val initiator = if (open) String(payload).split("|").getOrNull(0) ?: "" else ""
+        Log.i(TAG, "intercom: two-way channel ${if (open) "OPEN by $initiator" else "closed"}")
+        onTwoWayChannel?.invoke(open, initiator)
+    }
+    fun openTwoWayChannel() =
+        publish(TWOWAY_TOPIC, "$deviceId|${System.currentTimeMillis()}".toByteArray(), 1, true)
+    fun closeTwoWayChannel() = publish(TWOWAY_TOPIC, ByteArray(0), 1, true)
+
     private fun handleAudio(topic: String, payload: ByteArray) {
         // topic tail = "<sender>/<target>"
         val rest = topic.removePrefix(AUDIO_PREFIX)
@@ -237,6 +285,9 @@ class Intercom(
     }
 
     // ── Playback (receive) ────────────────────────────────────────────────────
+    @Volatile var onReceiveStart: (() -> Unit)? = null
+    @Volatile var onReceiveLevel: ((Int) -> Unit)? = null
+    @Volatile var onReceiveEnd: (() -> Unit)? = null
     private val playQueue = LinkedBlockingQueue<ByteArray>()
     private val playRunning = AtomicBoolean(false)
     private var playThread: Thread? = null
@@ -287,14 +338,15 @@ class Intercom(
 
                 if (frame == null) {
                     // Gone quiet — drop the forced volume and idle the track.
-                    if (boosted) { restoreVolume(savedVol); boosted = false; savedVol = -1 }
+                    if (boosted) { restoreVolume(savedVol); boosted = false; savedVol = -1; onReceiveEnd?.invoke() }
                     runCatching { track.pause(); track.flush() }
                     continue
                 }
                 if (!boosted) {
-                    savedVol = boostVolume(); boosted = true; runCatching { track.play() }
+                    savedVol = boostVolume(); boosted = true; runCatching { track.play() }; onReceiveStart?.invoke()
                     Log.i(TAG, "intercom: receiving — playing announcement")
                 }
+                onReceiveLevel?.invoke(levelOf(frame))
                 var off = 0
                 while (off < frame.size && playRunning.get()) {
                     val w = track.write(frame, off, frame.size - off)
@@ -305,8 +357,22 @@ class Intercom(
         } finally {
             runCatching { track.stop(); track.release() }
             if (boosted) restoreVolume(savedVol)
+            onReceiveEnd?.invoke()
             Log.i(TAG, "intercom: playback stopped")
         }
+    }
+
+    // RMS -> 0-100 level of a received PCM16-LE frame, for the receive orb's throb.
+    private fun levelOf(frame: ByteArray): Int {
+        var sumSq = 0.0; var count = 0; var i = 0
+        while (i + 1 < frame.size) {
+            val s = (frame[i].toInt() and 0xff) or (frame[i + 1].toInt() shl 8)
+            sumSq += s.toDouble() * s; count++; i += 2
+        }
+        if (count == 0) return 0
+        val rms = kotlin.math.sqrt(sumSq / count)
+        val dbfs = if (rms > 1.0) 20.0 * kotlin.math.log10(rms / 32768.0) else -90.0
+        return ((dbfs + 60.0) / 60.0 * 100.0).coerceIn(0.0, 100.0).toInt()
     }
 
     // Set STREAM_MUSIC to the user's chosen intercom level for the announcement;
@@ -341,7 +407,9 @@ class Intercom(
 
     // Start announcing. target = null/"all" → broadcast; else a peer device id.
     // Returns false if blocked (someone else speaking, no mic permission, busy).
-    fun startTalk(target: String?): Boolean {
+    // silent = skip the "talk now" ready beep (voice announce plays its own armed
+    // chirp before capture, so a second beep mid-sentence would just be noise).
+    fun startTalk(target: String?, silent: Boolean = false): Boolean {
         if (txRunning.get()) return true
         if (!canTransmit()) { Log.i(TAG, "intercom: transmit disabled — receive-only Portal"); return false }
         busySpeakerName()?.let { Log.i(TAG, "intercom: busy — $it is speaking"); return false }
@@ -357,7 +425,7 @@ class Intercom(
         acquireLock()
         txTopic = "$AUDIO_PREFIX$deviceId/${if (target.isNullOrEmpty()) "all" else target}"
         txFrames = 0
-        txBeeped = false
+        txBeeped = silent   // true = pretend we already beeped, so onMicFrame stays quiet
         lastLockRefresh = System.currentTimeMillis()
         if (onDemandCapture) startOnDemandCapture()                        // open our own mic now
         else soundMonitor?.frameSink = { buf, n -> onMicFrame(buf, n) }    // ride the warm mic
@@ -371,6 +439,9 @@ class Intercom(
         txCaptureThread = null   // the on-demand loop sees txRunning=false and exits, freeing its recorder
         releaseLock()
         Log.i(TAG, "intercom: stopped talking — sent $txFrames frames")
+        // 2-way mode: finishing a broadcast announce opens the reply channel so recipients
+        // can talk back hands-free. (Not for direct/peer announces.)
+        if (twoWayEnabled && txTopic.endsWith("/all")) openTwoWayChannel()
     }
 
     // Coexist-mode capture: a recorder that lives only for one announce. Mirrors

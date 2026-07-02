@@ -81,6 +81,23 @@
             android:backgroundTint="@color/colorPrimary"
             android:layout_marginBottom="24dp" />
 
+        <Switch
+            android:id="@+id/sw_two_way_test"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Enable 2-way (experimental)"
+            android:textSize="16sp"
+            android:textColor="@color/onSurface"
+            android:paddingVertical="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="When on, any intercom announcement opens a hands-free reply channel — recipients can just talk back (one at a time). The channel auto-closes after a minute of silence."
+            android:textSize="12sp"
+            android:textColor="@color/hint"
+            android:layout_marginBottom="24dp" />
+
         <!-- Sound -->
         <TextView
             android:layout_width="wrap_content"

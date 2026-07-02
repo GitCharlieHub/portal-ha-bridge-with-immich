@@ -20,6 +20,7 @@ class DisplaySettingsActivity : AppCompatActivity() {
     private lateinit var swEnhancedPresence: Switch
     private lateinit var swCoexist: Switch
     private lateinit var swWake: Switch
+    private lateinit var swVoiceAnnounce: Switch
     private lateinit var etWakePhrase: EditText
     private lateinit var seekPresenceSound: SeekBar
     private lateinit var tvPresenceSound: TextView
@@ -56,6 +57,7 @@ class DisplaySettingsActivity : AppCompatActivity() {
         swEnhancedPresence = findViewById(R.id.sw_enhanced_presence)
         swCoexist = findViewById(R.id.sw_coexist)
         swWake = findViewById(R.id.sw_wake)
+        swVoiceAnnounce = findViewById(R.id.sw_voice_announce)
         etWakePhrase = findViewById(R.id.et_wake_phrase)
         seekPresenceSound = findViewById(R.id.seek_presence_sound)
         tvPresenceSound = findViewById(R.id.tv_presence_sound)
@@ -113,6 +115,11 @@ class DisplaySettingsActivity : AppCompatActivity() {
                 Toast.LENGTH_SHORT).show()
         }
         etWakePhrase.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) saveWakePhrase() }
+
+        // Read at trigger time by the service — no live apply needed.
+        swVoiceAnnounce.setOnCheckedChangeListener { _, checked ->
+            if (checked != prefs.voiceAnnounceEnabled) { prefs.voiceAnnounceEnabled = checked; updateUi() }
+        }
 
         seekPresenceSound.progress = prefs.presenceSoundThreshold
         tvPresenceSound.text = soundLabel(prefs.presenceSoundThreshold)
@@ -197,6 +204,12 @@ class DisplaySettingsActivity : AppCompatActivity() {
         if (!etWakePhrase.hasFocus() && etWakePhrase.text.toString() != prefs.wakePhrase)
             etWakePhrase.setText(prefs.wakePhrase)
         findViewById<View>(R.id.row_wake_phrase).alpha = if (prefs.wakeWordEnabled) 1f else 0.4f
+
+        // Voice announce rides the wake detector — grey it out when wake is off.
+        swVoiceAnnounce.isChecked = prefs.voiceAnnounceEnabled
+        swVoiceAnnounce.isEnabled = prefs.wakeWordEnabled
+        swVoiceAnnounce.alpha = if (prefs.wakeWordEnabled) 1f else 0.4f
+        findViewById<View>(R.id.tv_voice_announce_note).alpha = if (prefs.wakeWordEnabled) 0.6f else 0.3f
         swWake.isEnabled = !prefs.coexistVoiceAssistant
         swWake.alpha = if (prefs.coexistVoiceAssistant) 0.4f else 1f
         swCoexist.isEnabled = !prefs.wakeWordEnabled

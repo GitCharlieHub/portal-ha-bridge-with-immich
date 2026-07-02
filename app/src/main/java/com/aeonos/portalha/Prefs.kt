@@ -171,6 +171,19 @@ class Prefs(private val context: Context) {
             sp.edit().putString("wake_phrase", phrase).apply()
         }
 
+    // Hands-free intercom announce: "<wake phrase> announce" → beep → your live voice
+    // broadcasts to every Portal. Only functions while the wake word is enabled.
+    var voiceAnnounceEnabled: Boolean
+        get() = sp.getBoolean("voice_announce_enabled", true)
+        set(v) = sp.edit().putBoolean("voice_announce_enabled", v).apply()
+
+    // Experimental: makes intercom announcements TWO-WAY. When on, finishing any announce
+    // (talk button, drawer, or "<phrase> announce") opens a hands-free reply channel so
+    // recipients can just talk back (VOX + first-come lock). Off by default.
+    var twoWayExperimental: Boolean
+        get() = sp.getBoolean("two_way_experimental", false)
+        set(v) = sp.edit().putBoolean("two_way_experimental", v).apply()
+
     // Assistant package the wake handoff broadcast targets (portal-wake's contract).
     var wakeAssistantPackage: String
         get() = sp.getString("wake_assistant_pkg", "com.portal.assistant") ?: "com.portal.assistant"

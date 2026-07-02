@@ -32,6 +32,10 @@ import java.util.zip.ZipInputStream
 class WakeWordDetector(
     private val context: Context,
     private val onWake: () -> Unit,
+    // "<wake phrase> announce" spoken as one utterance → hands-free intercom announce
+    // instead of the assistant handoff. Deliberately gated harder than the plain wake
+    // (exact phrase, higher floors) — a false announcement interrupts the whole house.
+    private val onAnnounce: () -> Unit = {},
 ) {
     companion object {
         private const val TAG = "PortalHA"
@@ -50,6 +54,8 @@ class WakeWordDetector(
         private const val KEYWORD_MIN_CONF = 0.60             // "jarvis" must clear this
         private const val LEAD_MIN_CONF = 0.80                // "hey" must clear this
         private const val CLEAN_PHRASE_MAX_WORDS = 3          // a real wake is a short, clean phrase
+        private const val ANNOUNCE_WORD = "announce"          // "<phrase> announce" → voice announce
+        private const val ANNOUNCE_MIN_CONF = 0.90            // every word must clear this for announce
         private const val WARMUP_SILENCE_FRAMES = 25          // ~1 s of silence settles the decoder
         private val LEAD_ALIASES = mapOf("hey" to setOf("hey", "hay"))   // Vosk mishears "hey" as "hay"
     }
@@ -112,7 +118,9 @@ class WakeWordDetector(
         // non-matching speech (so look-alikes aren't forced onto the wake) AND is the
         // contamination signal the gate below rejects. setWords gives per-word confidence.
         val entries = LinkedHashSet<String>().apply {
-            add(target); add(keyword); lead?.let { add(it) }; add(UNK_TOKEN)
+            add(target); add(keyword); lead?.let { add(it) }
+            add("$target $ANNOUNCE_WORD"); add(ANNOUNCE_WORD)   // bias the announce trigger too
+            add(UNK_TOKEN)
         }
         val grammar = JSONArray(entries.toList()).toString()
         val recognizer = runCatching { Recognizer(model, SAMPLE_RATE, grammar) }
@@ -133,17 +141,15 @@ class WakeWordDetector(
                 if (!recognizer.acceptWaveForm(frame, frame.size)) continue
                 val rec = parseResult(recognizer.result)
                 if (rec.isEmpty()) continue
-                if (isWake(rec)) {
-                    val now = System.currentTimeMillis()
-                    if (now >= ignoreUntilMs && now - lastFireMs >= FIRE_COOLDOWN_MS) {
-                        lastFireMs = now
-                        Log.i(TAG, "wake: matched [${render(rec)}] -> firing")
-                        recognizer.reset()
-                        warmUp(recognizer)
-                        queue.clear()
-                        runCatching { onWake() }
-                    }
-                } else if (rec.any { it.word == keyword }) {
+                // An utterance carrying "announce" is ONLY ever an announce candidate — if it
+                // fails the strict gate it's a near-miss, never a fallback assistant wake
+                // (the intent was clearly announce; waking Jarvis instead would be worse).
+                val hasAnnounce = rec.any { it.word == ANNOUNCE_WORD }
+                if (hasAnnounce && isAnnounce(rec)) {
+                    fire(recognizer, rec, "voice announce") { onAnnounce() }
+                } else if (!hasAnnounce && isWake(rec)) {
+                    fire(recognizer, rec, "wake") { onWake() }
+                } else if (rec.any { it.word == keyword || it.word == ANNOUNCE_WORD }) {
                     // Keyword decoded but a gate rejected it — log the near-miss for tuning.
                     Log.i(TAG, "wake: near-miss [${render(rec)}] (rejected)")
                 }
@@ -172,6 +178,36 @@ class WakeWordDetector(
         val text = obj.optString("text").trim()
         if (text.isEmpty()) return emptyList()
         return text.lowercase().split(Regex("\\s+")).map { RecWord(it, -1.0) }
+    }
+
+    // Shared trigger path: cooldown + ignore-window gate, then reset the decoder and fire.
+    private inline fun fire(recognizer: Recognizer, rec: List<RecWord>, what: String, action: () -> Unit) {
+        val now = System.currentTimeMillis()
+        if (now < ignoreUntilMs || now - lastFireMs < FIRE_COOLDOWN_MS) return
+        lastFireMs = now
+        Log.i(TAG, "wake: matched [${render(rec)}] -> firing $what")
+        recognizer.reset()
+        warmUp(recognizer)
+        queue.clear()
+        runCatching { action() }
+    }
+
+    // The announce decision — deliberately the strictest gate in the app: the decode must be
+    // EXACTLY "<lead> <keyword> announce" (nothing before/after, so any [unk] fails by length),
+    // and EVERY word must clear ANNOUNCE_MIN_CONF (real close-mic decodes score ~1.00; every
+    // live false positive we've caught had at least one weak word). Bias: a missed announce
+    // costs a repeat; a false one interrupts the whole house.
+    private fun isAnnounce(rec: List<RecWord>): Boolean {
+        val expected = words + ANNOUNCE_WORD                       // e.g. [hey, jarvis, announce]
+        if (rec.size != expected.size) return false
+        val leadIdx = expected.size - 3                            // lead position (when phrase has one)
+        for (i in expected.indices) {
+            val ok = rec[i].word == expected[i] ||
+                (i == leadIdx && rec[i].word in (LEAD_ALIASES[expected[i]] ?: emptySet()))
+            if (!ok) return false
+            if (rec[i].conf < ANNOUNCE_MIN_CONF) return false      // unknown conf (-1) fails too
+        }
+        return true
     }
 
     // The wake decision (single-phrase port of portal-wake's strict route): the keyword must be

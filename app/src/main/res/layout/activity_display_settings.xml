@@ -180,6 +180,26 @@
             android:layout_marginTop="-16dp"
             android:layout_marginBottom="24dp" />
 
+        <Switch
+            android:id="@+id/sw_voice_announce"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Voice announce"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="@color/onSurface"
+            android:paddingVertical="12dp" />
+
+        <TextView
+            android:id="@+id/tv_voice_announce_note"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Say your wake phrase + “announce” in one breath, wait for the chirp, then speak — your voice broadcasts to every Portal. Silence ends it."
+            android:textSize="12sp"
+            android:textColor="@color/onSurface"
+            android:alpha="0.6"
+            android:layout_marginBottom="24dp" />
+
         <!-- Screen Off Timer -->
         <Switch
             android:id="@+id/sw_screen_timeout"

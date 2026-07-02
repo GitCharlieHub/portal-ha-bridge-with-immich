@@ -4,6 +4,29 @@ All notable changes to Portal HA Bridge. Versions are the app `versionName`;
 the in-app updater (Settings → *Check for Updates*) and the provisioner both pull
 the latest GitHub release.
 
+## v1.16.0 — Voice announce, glowing orb, and experimental hands-free 2-way
+
+**Added**
+- **Voice announce.** Say your wake phrase + **"announce"** in one breath ("hey
+  jarvis announce"), wait for the double-chirp, then speak — your live voice
+  broadcasts to every Portal over the intercom. ~2s of silence ends it (end tone),
+  30s max. No assistant round-trip, no synthesized speech — it's your own voice.
+  Deliberately hard to mis-fire: the phrase must decode **exactly** with **every
+  word ≥90% confidence**, and it only transmits if real speech follows the chirp.
+  Toggle in Settings → Display & Presence.
+- **Glowing Portal-style orb.** A big animated aperture (glowing rim, swirling
+  vortex, orbiting sparks) shows while a voice announce or 2-way channel is live —
+  **orange** on the Portal transmitting, **blue** on those receiving, throbbing with
+  the audio. Tap it to stop/hang up.
+- **Screen wakes on an announcement.** A sleeping Portal now wakes and shows the orb
+  when an announcement arrives, instead of only playing audio to a dark screen.
+- **Experimental hands-free 2-way.** Settings → Intercom → **Enable 2-way**. When on,
+  finishing any Everyone-announce opens a live **reply channel**: every Portal
+  auto-arms and you just **talk back hands-free** — voice-activated, one at a time
+  (first-come lock, so no garble), with the speaker's orb glowing orange so everyone
+  sees who has the floor. Tap a Portal to hang up; ~2s of silence drops it. Uses the
+  `VOICE_COMMUNICATION` mic path for echo cancellation. Off by default.
+
 ## v1.15.0 — Native Home Assistant frontend integration + talk-button drag-to-delete
 
 **Added**

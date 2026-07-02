@@ -46,6 +46,9 @@ class BridgeService : Service() {
         private const val ACTION_ENSURE_CAMERA = "com.aeonos.portalha.ENSURE_CAMERA"
         private const val ACTION_APPLY_DISPLAY = "com.aeonos.portalha.APPLY_DISPLAY"
         private const val ACTION_APPLY_INTERCOM = "com.aeonos.portalha.APPLY_INTERCOM"
+        private const val ACTION_TWOWAY_TEST = "com.aeonos.portalha.TWOWAY_TEST"
+        private const val EXTRA_TWOWAY_ON = "two_way_on"
+        private const val TWOWAY_IDLE_MS = 2_000L      // drop the reply channel after ~2 s of silence
 
         // Live reference to the running service so the dashboard UI + the PTT
         // overlay can query peers and drive the intercom directly (low latency,
@@ -60,6 +63,12 @@ class BridgeService : Service() {
         // Returns true if talking actually started (false = busy / no mic / not ready).
         fun intercomStartTalk(target: String?): Boolean = instance?.intercom?.startTalk(target) == true
         fun intercomStopTalk() { instance?.intercom?.stopTalk() }
+
+        // Experimental hands-free 2-way test engine — driven by the temporary toggle in
+        // Intercom settings while we verify whether echo behaves on the hardware.
+        fun setTwoWayEnabled(context: Context, on: Boolean) =
+            context.startForegroundService(Intent(context, BridgeService::class.java)
+                .setAction(ACTION_TWOWAY_TEST).putExtra(EXTRA_TWOWAY_ON, on))
 
         // Fire the assistant hand-off on demand (e.g. the HA dashboard voice button via
         // HaExternalBridge). Reuses the wake flow: brings the assistant up, yields the mic,
@@ -143,8 +152,14 @@ class BridgeService : Service() {
     private var audioReceiver: BroadcastReceiver? = null
     private var sensorBridge: SensorBridge? = null
     private var soundMonitor: SoundMonitor? = null
+    private var twoWay: TwoWayEngine? = null
+    private var twoWayOrb: AnnounceOrbOverlay? = null
+    @Volatile private var twoWayChannelOpen = false
+    @Volatile private var lastTwoWayActivityMs = 0L
     private var wakeDetector: WakeWordDetector? = null
     private var startedWakePhrase: String? = null   // phrase the live recognizer was built with
+    private var voiceAnnounce: VoiceAnnounce? = null
+    private var receiveOrb: AnnounceOrbOverlay? = null
 
     // Portal-to-Portal intercom (audio-only push-to-announce) + optional overlays.
     private var intercom: Intercom? = null
@@ -259,10 +274,36 @@ class BridgeService : Service() {
             .also {
                 it.attachSoundMonitor(if (coexist) null else soundMonitor)
                 it.setOnDemandCapture(coexist)
+                val ro = AnnounceOrbOverlay(this, blue = true, interactive = false)
+                receiveOrb = ro
+                it.onReceiveStart = {
+                    ScreenControl.wake(this); lastActivityMs = System.currentTimeMillis()
+                    if (twoWayChannelOpen) { twoWayOrb?.setLive(true); lastTwoWayActivityMs = System.currentTimeMillis() }
+                    else { ro.show(); ro.setLive(true) }
+                }
+                it.onReceiveLevel = { lvl ->
+                    if (twoWayChannelOpen) { twoWayOrb?.setLevel(lvl); lastTwoWayActivityMs = System.currentTimeMillis() }
+                    else ro.setLevel(lvl)
+                }
+                it.onReceiveEnd = { if (!twoWayChannelOpen) ro.hide() }
+                it.onTwoWayChannel = { open, _ -> onTwoWayChannelChanged(open) }
             }
         // On-device "hey jarvis": fed the warm mic, fires the assistant wake handoff.
-        wakeDetector = WakeWordDetector(this) { fireWakeHandoff() }.also { it.phrase = p.wakePhrase }
+        // "<phrase> announce" instead triggers a hands-free intercom broadcast.
+        voiceAnnounce = VoiceAnnounce({ soundMonitor }, { intercom }, orb = AnnounceOrbOverlay(this, blue = false, interactive = true), onDone = {
+            wakeDetector?.pauseMatching(3_000L)   // end tone / room echo can't re-trigger
+        })
+        wakeDetector = WakeWordDetector(this,
+            onWake = { fireWakeHandoff() },
+            onAnnounce = { startVoiceAnnounce() },
+        ).also { it.phrase = p.wakePhrase }
         soundMonitor?.wakeSink = { buf, n -> wakeDetector?.feed(buf, n) }
+        twoWay = TwoWayEngine(this, { intercom }, { talking ->
+            lastTwoWayActivityMs = System.currentTimeMillis()
+            twoWayOrb?.setTransmitting(talking)   // my orb warms blue→orange while I hold the floor
+            Log.i(TAG, "2way: talking=$talking")
+        })
+        intercom?.twoWayEnabled = p.twoWayExperimental
         instance = this
 
         // Measure mic capability first (it owns the mic briefly), then start the
@@ -360,6 +401,14 @@ class BridgeService : Service() {
             hideIntercomOverlays()          // rebuild from the (possibly edited) config
             reconcileIntercomOverlays()
         }
+        if (intent?.action == ACTION_TWOWAY_TEST) {
+            // Enable/disable 2-way mode. A broadcast announce then auto-opens the reply
+            // channel (see Intercom.stopTalk); disabling also closes any open channel.
+            val on = intent.getBooleanExtra(EXTRA_TWOWAY_ON, false)
+            intercom?.twoWayEnabled = on
+            if (!on) intercom?.closeTwoWayChannel()
+            Log.i(TAG, "2way: enabled=$on")
+        }
         if (intent?.action == ACTION_APPLY_DISPLAY) {
             val p = prefs ?: Prefs(this).also { prefs = it }
             commandExecutor.submit {
@@ -389,6 +438,7 @@ class BridgeService : Service() {
         sensorBridge?.stop()
         soundMonitor?.stop()
         wakeDetector?.stop()
+        twoWay?.stop(); twoWayOrb?.hide()
         wakeHandler.removeCallbacks(reclaimPoll); micYieldedForWake = false
         intercom?.release()
         hideIntercomOverlays()
@@ -1064,6 +1114,59 @@ class BridgeService : Service() {
     // (Jarvis) wakes and takes the mic. We don't hand the mic back explicitly:
     // SoundMonitor yields on its own (its reads fail while the assistant records, then
     // it re-acquires when the assistant releases), and a cooldown blocks instant re-fire.
+    // Hands-free 2-way channel opened/closed (from the shared signal, on ANY Portal — that's
+    // the auto-arm). While open, hand the mic to the AEC VOICE_COMMUNICATION engine (VOX +
+    // first-come floor lock); when closed, restore the warm mic (sound sensor + wake word).
+    // A blue orb marks the live channel.
+    private fun onTwoWayChannelChanged(open: Boolean) {
+        wakeHandler.post {
+            if (open == twoWayChannelOpen) return@post
+            twoWayChannelOpen = open
+            if (open) {
+                lastTwoWayActivityMs = System.currentTimeMillis()
+                receiveOrb?.hide()          // the announce orb hands off to the 2-way orb
+                soundMonitor?.stop()
+                wakeHandler.postDelayed({ if (twoWayChannelOpen) twoWay?.start() }, 350L)
+                if (twoWayOrb == null) twoWayOrb = AnnounceOrbOverlay(this, blue = true, interactive = true)
+                    .also { it.onTap = { intercom?.closeTwoWayChannel() } }   // tap the Portal to hang up
+                twoWayOrb?.show(); twoWayOrb?.setLive(true)
+                wakeHandler.removeCallbacks(twoWayIdleCheck)
+                wakeHandler.postDelayed(twoWayIdleCheck, 500L)
+                Log.i(TAG, "2way channel: OPEN — engine armed")
+            } else {
+                wakeHandler.removeCallbacks(twoWayIdleCheck)
+                twoWay?.stop()
+                val coexist = prefs?.let { it.coexistVoiceAssistant && !it.wakeWordEnabled } ?: false
+                if (!coexist && soundMonitor?.isRunning() == false) soundMonitor?.start()
+                twoWayOrb?.hide(); twoWayOrb = null
+                Log.i(TAG, "2way channel: closed — mic restored")
+            }
+        }
+    }
+
+    // While the channel is open, drop it on a short burst of true silence — nobody talking
+    // locally (engine has no floor) AND nothing coming in. Keeps the timer fresh while I talk.
+    private val twoWayIdleCheck = object : Runnable {
+        override fun run() {
+            if (!twoWayChannelOpen) return
+            if (twoWay?.talking == true) lastTwoWayActivityMs = System.currentTimeMillis()
+            if (System.currentTimeMillis() - lastTwoWayActivityMs > TWOWAY_IDLE_MS) {
+                Log.i(TAG, "2way channel: silent — closing")
+                intercom?.closeTwoWayChannel()
+            } else wakeHandler.postDelayed(this, 400L)
+        }
+    }
+
+    // "<wake phrase> announce" matched — hands-free intercom broadcast (no assistant).
+    // Wake matching pauses for the whole possible window (armed + live) so our own
+    // announcement audio can't trigger anything; VoiceAnnounce.onDone re-arms sooner.
+    private fun startVoiceAnnounce() {
+        val p = prefs ?: return
+        if (!p.voiceAnnounceEnabled) { Log.i(TAG, "announce: disabled in settings"); return }
+        wakeDetector?.pauseMatching(36_000L)
+        if (voiceAnnounce?.start() != true) wakeDetector?.pauseMatching(2_000L)
+    }
+
     private fun fireWakeHandoff() {
         val p = prefs ?: return
         val id = p.wakePhrase.trim().lowercase().substringAfterLast(' ').ifEmpty { "jarvis" }

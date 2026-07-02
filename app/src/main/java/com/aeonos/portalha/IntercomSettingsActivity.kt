@@ -60,6 +60,15 @@ class IntercomSettingsActivity : AppCompatActivity() {
             startActivity(Intent(this, IntercomButtonsActivity::class.java))
         }
 
+        // Experimental: enable 2-way mode. When on, an announce opens a hands-free reply
+        // channel so recipients can talk back. This is a persisted enable, not a live channel.
+        val swTwoWay = findViewById<Switch>(R.id.sw_two_way_test)
+        swTwoWay.isChecked = prefs.twoWayExperimental
+        swTwoWay.setOnCheckedChangeListener { _, checked ->
+            prefs.twoWayExperimental = checked
+            BridgeService.setTwoWayEnabled(this, checked)
+        }
+
         // Announcement volume.
         val seekVol = findViewById<SeekBar>(R.id.seek_intercom_volume)
         val tvVol = findViewById<TextView>(R.id.tv_intercom_volume)
