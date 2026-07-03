@@ -28,11 +28,8 @@ class MainActivity : AppCompatActivity() {
         val etHaUrl = findViewById<EditText>(R.id.et_ha_url)
         etHaUrl.setText(prefs.haUrl)
 
-        // ImmichFrame settings
         val etImmichUrl = findViewById<EditText>(R.id.et_immich_url)
-        val swImmichEnabled = findViewById<Switch>(R.id.sw_immich_enabled)
         etImmichUrl.setText(prefs.immichFrameUrl)
-        swImmichEnabled.isChecked = prefs.immichFrameEnabled
 
         // Back to the dashboard (MainActivity is always opened from it)
         findViewById<Button>(R.id.btn_back).setOnClickListener { finish() }
@@ -93,7 +90,6 @@ class MainActivity : AppCompatActivity() {
             prefs.deviceName = etName.text.toString().trim().ifEmpty { "Portal" }
             prefs.haUrl = etHaUrl.text.toString().trim()
             prefs.immichFrameUrl = etImmichUrl.text.toString().trim()
-            prefs.immichFrameEnabled = swImmichEnabled.isChecked
             BridgeService.stop(this)
             BridgeService.start(this)
             updateStatus()

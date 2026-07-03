@@ -268,15 +268,26 @@ class BridgeService : Service(), MqttCallbackExtended {
     // library bug doesn't kill the process; all other crashes propagate normally.
     private fun installRtspCrashGuard() {
         val existing = Thread.getDefaultUncaughtExceptionHandler()
-        Thread.setDefaultUncaughtExceptionHandler { thread, ex ->
+        // Guard is process-scoped; don't wrap it again if this service instance
+        // is destroyed and recreated within the same process (e.g. stop + start).
+        if (existing is RtspCrashGuardHandler) return
+        Thread.setDefaultUncaughtExceptionHandler(RtspCrashGuardHandler(existing))
+    }
+
+    private class RtspCrashGuardHandler(
+        private val delegate: Thread.UncaughtExceptionHandler?
+    ) : Thread.UncaughtExceptionHandler {
+        override fun uncaughtException(thread: Thread, ex: Throwable) {
             if (ex is InterruptedException &&
                 ex.stackTrace.any { it.className.contains("rtspserver", ignoreCase = true) }
             ) {
                 Log.w(TAG, "swallowed RtspServer InterruptedException on ${thread.name}")
-                return@setDefaultUncaughtExceptionHandler
+                return
             }
-            existing?.uncaughtException(thread, ex)
+            delegate?.uncaughtException(thread, ex)
+                ?: android.os.Process.killProcess(android.os.Process.myPid())
         }
+        companion object { private const val TAG = "PortalHA" }
     }
 
     // ── Sensors ───────────────────────────────────────────────────────────────
