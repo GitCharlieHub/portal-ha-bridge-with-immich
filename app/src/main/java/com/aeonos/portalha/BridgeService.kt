@@ -130,6 +130,7 @@ class BridgeService : Service(), MqttCallbackExtended {
 
     override fun onCreate() {
         super.onCreate()
+        installRtspCrashGuard()
         prefs = Prefs(this)
         mainHandler = Handler(Looper.getMainLooper())
         workerThread = HandlerThread("portal-ha-service").also { it.start() }
@@ -213,7 +214,9 @@ class BridgeService : Service(), MqttCallbackExtended {
         startSensors()
         startPresenceIfEnabled()
         connectMqtt()
-        applyCameraState()
+        // Camera is NOT started here. DashboardActivity.onResume() calls
+        // ensureCamera() once we are truly foreground — Portal blocks camera
+        // from background processes, so attempting it here causes crashes.
         applyDisplaySettingsInternal()
         mainHandler.post { startOrientationListener() }
     }
@@ -257,6 +260,22 @@ class BridgeService : Service(), MqttCallbackExtended {
         overlayView?.let {
             runCatching { getSystemService(WindowManager::class.java).removeView(it) }
             overlayView = null
+        }
+    }
+
+    // RTSP-Server 1.3.0 leaks an uncaught InterruptedException from its accept
+    // thread when stopStream() is called. Swallow only that specific case so the
+    // library bug doesn't kill the process; all other crashes propagate normally.
+    private fun installRtspCrashGuard() {
+        val existing = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, ex ->
+            if (ex is InterruptedException &&
+                ex.stackTrace.any { it.className.contains("rtspserver", ignoreCase = true) }
+            ) {
+                Log.w(TAG, "swallowed RtspServer InterruptedException on ${thread.name}")
+                return@setDefaultUncaughtExceptionHandler
+            }
+            existing?.uncaughtException(thread, ex)
         }
     }
 
