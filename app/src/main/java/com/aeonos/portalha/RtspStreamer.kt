@@ -23,7 +23,7 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
 
     // Reflects the library's actual streaming state, not a cached flag, so that
     // if Portal revokes the camera mid-stream the watchdog sees the truth.
-    val isStreaming: Boolean get() = stream?.isStreaming() == true
+    val isStreaming: Boolean get() = stream?.isStreaming == true
 
     // Called by BridgeService when the stream drops unexpectedly so it can
     // schedule a restart without waiting for the next onResume().
