@@ -39,6 +39,7 @@ object HaDiscovery {
         return """{"name":"Temperature","unique_id":"${deviceId}_temperature","device":${device(deviceId, name)},"state_topic":"${tempStateTopic(deviceId)}","device_class":"temperature","unit_of_measurement":"°C","state_class":"measurement"}"""
     }
 
+    // Calibration offset for the temperature sensor (HA number).
     fun tempOffsetDiscoveryTopic(deviceId: String) =
         "homeassistant/number/${deviceId}_temp_offset/config"
 
@@ -258,6 +259,7 @@ object HaDiscovery {
         return """{"name":"Motion Sensitivity","unique_id":"${deviceId}_motion_sensitivity","device":${device(deviceId, name)},"state_topic":"${motionSensitivityStateTopic(deviceId)}","command_topic":"${motionSensitivityCommandTopic(deviceId)}","min":1,"max":100,"step":1,"mode":"slider","icon":"mdi:motion-sensor"}"""
     }
 
+    // Topics to clear when motion detection is disabled
     fun motionEntityTopics(deviceId: String) = listOf(
         motionDiscoveryTopic(deviceId),
         motionSensitivityDiscoveryTopic(deviceId)
@@ -312,18 +314,6 @@ object HaDiscovery {
     fun screenTimeoutMinsConfigPayload(deviceId: String, deviceName: String): String {
         val name = deviceName.escape()
         return """{"name":"Screen Timeout Minutes","unique_id":"${deviceId}_screen_timeout_mins","device":${device(deviceId, name)},"state_topic":"${screenTimeoutMinsStateTopic(deviceId)}","command_topic":"${screenTimeoutMinsCommandTopic(deviceId)}","min":1,"max":240,"step":1,"mode":"box","unit_of_measurement":"min","icon":"mdi:timer-cog"}"""
-    }
-
-    // ── IP address sensor (diagnostic) ────────────────────────────────────────
-
-    fun ipDiscoveryTopic(deviceId: String) =
-        "homeassistant/sensor/${deviceId}_ip/config"
-
-    fun ipStateTopic(deviceId: String) = "portal/$deviceId/sensor/ip"
-
-    fun ipConfigPayload(deviceId: String, deviceName: String): String {
-        val name = deviceName.escape()
-        return """{"name":"IP Address","unique_id":"${deviceId}_ip","device":${device(deviceId, name)},"state_topic":"${ipStateTopic(deviceId)}","icon":"mdi:ip-network","entity_category":"diagnostic"}"""
     }
 
     // ── Stale entity cleanup ──────────────────────────────────────────────────

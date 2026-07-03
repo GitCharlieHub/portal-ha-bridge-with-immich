@@ -30,14 +30,6 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     // Portal is physically turned (the OS display rotation is locked).
     @Volatile var autoRotation = 0
 
-    // Both Portal+ models ("aloha" 1st-gen, "cipher" 2nd-gen) have a front camera
-    // whose usable cam (Camera 0) reports only 1280x720 + 4:3 sizes but whose true
-    // FOV is ~SQUARE — so any 16:9 request comes out stretched. Encoding a square
-    // surface makes the stream natively display 1:1 in every player with no aspect
-    // override (verified on aloha via raw frames; cipher shares the exact camera
-    // architecture). 480x480 keeps the native vertical resolution.
-    private val squashedFrontCam = android.os.Build.DEVICE.lowercase() in setOf("aloha", "cipher")
-
     // Capture params from the last start(), reused by restart() on rotation change.
     private var baseWidth = 1280
     private var baseHeight = 720
@@ -68,21 +60,20 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
             stream = s
             // Pass the LANDSCAPE capture dims + rotation; prepareVideo swaps the
             // ENCODER size itself for 90/270 (don't pre-swap — that double-swaps).
+            // NOTE: portrait still letterboxes because the Portal front cam can only
+            // capture landscape; the camera-fill is a library limitation. Fine for
+            // a landscape-mounted Portal (auto-rotate keeps it landscape = no bars).
             val rot = currentRotation()
-            val corrected = squashedFrontCam && width * 9 == height * 16
-            val isCipher = android.os.Build.DEVICE.equals("cipher", true)
-            val encW = if (corrected) (if (isCipher) 640 else 480) else width
-            val encH = if (corrected) 480 else height
             // Force H.264 Constrained Baseline — WebRTC browser decoders (and most
             // RTSP camera clients) need it. RootEncoder's default is HIGH profile,
             // which WebRTC rejects → "one keyframe then freeze". Fall back to the
             // encoder default if this device can't do Constrained Baseline.
             val profile = MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline
             val level = MediaCodecInfo.CodecProfileLevel.AVCLevel31
-            var videoOk = s.prepareVideo(encW, encH, bitrate, fps, 2, rot, profile, level)
+            var videoOk = s.prepareVideo(width, height, bitrate, fps, 2, rot, profile, level)
             if (!videoOk) {
                 Log.w(TAG, "Constrained-Baseline prepare failed; using encoder default profile")
-                videoOk = s.prepareVideo(encW, encH, bitrate, fps, 2, rot)
+                videoOk = s.prepareVideo(width, height, bitrate, fps, 2, rot)
             }
             // Always prepare the audio encoder — startStream() requires it even with
             // NoAudioSource (NoAudioSource just means no mic is opened, no data fed).
@@ -90,7 +81,7 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
             if (videoOk && audioOk) {
                 s.startStream()
                 isStreaming = true
-                Log.i(TAG, "RTSP streaming on ${url()} ${encW}x${encH} rot=$rot squash=$squashedFrontCam (audio=$withAudio)")
+                Log.i(TAG, "RTSP streaming on ${url()} ${width}x${height} rot=$rot (audio=$withAudio)")
                 true
             } else {
                 Log.w(TAG, "RTSP prepare failed (video=$videoOk audio=$audioOk)")

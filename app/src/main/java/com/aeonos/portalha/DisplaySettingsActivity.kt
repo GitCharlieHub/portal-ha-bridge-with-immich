@@ -46,6 +46,8 @@ class DisplaySettingsActivity : AppCompatActivity() {
         swPresence.setOnCheckedChangeListener { _, checked ->
             if (checked == prefs.presenceEnabled) return@setOnCheckedChangeListener
             prefs.presenceEnabled = checked
+            // Presence needs READ_LOGS, which only adb can grant. If missing, tell
+            // the user exactly how — same constraint as screen sleep.
             if (checked && !hasReadLogs()) showReadLogsDialog()
             BridgeService.applyDisplaySettings(this)
             updateUi()

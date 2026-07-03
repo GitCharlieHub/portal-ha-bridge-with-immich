@@ -28,12 +28,6 @@ class MainActivity : AppCompatActivity() {
         val etHaUrl = findViewById<EditText>(R.id.et_ha_url)
         etHaUrl.setText(prefs.haUrl)
 
-        // ImmichFrame settings
-        val etImmichUrl = findViewById<EditText>(R.id.et_immich_url)
-        val swImmichEnabled = findViewById<Switch>(R.id.sw_immich_enabled)
-        etImmichUrl.setText(prefs.immichFrameUrl)
-        swImmichEnabled.isChecked = prefs.immichFrameEnabled
-
         // Back to the dashboard (MainActivity is always opened from it)
         findViewById<Button>(R.id.btn_back).setOnClickListener { finish() }
 
@@ -92,8 +86,6 @@ class MainActivity : AppCompatActivity() {
             prefs.password = etPass.text.toString()
             prefs.deviceName = etName.text.toString().trim().ifEmpty { "Portal" }
             prefs.haUrl = etHaUrl.text.toString().trim()
-            prefs.immichFrameUrl = etImmichUrl.text.toString().trim()
-            prefs.immichFrameEnabled = swImmichEnabled.isChecked
             BridgeService.stop(this)
             BridgeService.start(this)
             updateStatus()
@@ -135,7 +127,6 @@ class MainActivity : AppCompatActivity() {
 
         findViewById<TextView>(R.id.tv_status).text = buildString {
             appendLine("Device ID: ${prefs.deviceId}")
-            appendLine("IP:        ${BridgeService.localIp() ?: "(no network)"}")
             appendLine("Broker:    ${prefs.brokerUri}")
             appendLine()
             appendLine("CAMERA:                ${if (hasCamera) "✓" else "✗  tap Grant below"}")
@@ -197,6 +188,9 @@ class MainActivity : AppCompatActivity() {
         val density = resources.displayMetrics.density
         fun dp(v: Int) = (v * density).toInt()
 
+        // Each argument on its own line so the space separating the package from
+        // the permission can't disappear into a line wrap. Three lines = three
+        // space-separated parts of one command.
         val code = TextView(this).apply {
             text = "adb shell pm grant\n$packageName\nandroid.permission.WRITE_SECURE_SETTINGS"
             typeface = android.graphics.Typeface.MONOSPACE
@@ -242,6 +236,7 @@ class MainActivity : AppCompatActivity() {
     // detail page (API 29+) which deep-links straight to our toggle, bypassing
     // the list; fall back to the list screen if that isn't available either.
     private fun openAccessibility() {
+        // These framework constants are @hide, so use their literal values.
         val component = "$packageName/${ScreenAccessibility::class.java.name}"
         val args = android.os.Bundle().apply {
             putString("android.provider.extra.ACCESSIBILITY_SERVICE_COMPONENT_NAME", component)
@@ -259,11 +254,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Non-Portal fallback: the standard accessibility list (has its own back button).
     private fun openAccessibilityList() {
         Toast.makeText(this, "Enable 'Portal HA Bridge' for screen sleep", Toast.LENGTH_LONG).show()
         runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
     }
 
+    // Portal's system settings pages have no back button, so warn the user what
+    // to expect before launching them: toggle ON, then use the Back gesture.
     private fun openSpecialAccess(intent: Intent, toggleName: String, purpose: String) {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Enable '$toggleName'")

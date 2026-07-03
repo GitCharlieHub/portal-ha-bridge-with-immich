@@ -98,9 +98,7 @@ class Prefs(private val context: Context) {
 
     // Manual stream rotation in degrees (0/90/180/270), cycled from the app.
     var streamRotation: Int
-        // cipher (2nd-gen Portal+) is fixed-orientation and needs +90 to be upright;
-        // default it there so it's correct out of the box (still adjustable).
-        get() = sp.getInt("stream_rotation", if (android.os.Build.DEVICE.equals("cipher", true)) 90 else 0)
+        get() = sp.getInt("stream_rotation", 0)
         set(v) = sp.edit().putInt("stream_rotation", v).apply()
 
     // Portal presence — reads Meta's own face-presence detection by tailing
@@ -123,33 +121,6 @@ class Prefs(private val context: Context) {
     var haUrl: String
         get() = sp.getString("ha_url", "") ?: ""
         set(v) = sp.edit().putString("ha_url", v).apply()
-
-    // ImmichFrame integration — shows a photo slideshow in the foreground so
-    // the Portal HA Bridge stays visible (which is required for camera access).
-    // Set immichFrameUrl to the base URL of your ImmichFrame server, e.g.
-    // http://192.168.1.10:3000
-    var immichFrameUrl: String
-        get() = sp.getString("immich_frame_url", "") ?: ""
-        set(v) = sp.edit().putString("immich_frame_url", v).apply()
-
-    var immichFrameEnabled: Boolean
-        get() = sp.getBoolean("immich_frame_enabled", false)
-        set(v) = sp.edit().putBoolean("immich_frame_enabled", v).apply()
-
-    // Random 16-hex token generated once per install, used as the MJPEG stream
-    // password (username "stream"). Completely independent of MQTT credentials —
-    // the stream stays protected even when MQTT is configured without auth.
-    // Share with Frigate as: http://stream:<token>@<device-ip>:8080/
-    val mjpegToken: String
-        get() {
-            val existing = sp.getString("mjpeg_token", null)
-            if (!existing.isNullOrBlank()) return existing
-            val bytes = ByteArray(8)
-            java.security.SecureRandom().nextBytes(bytes)
-            val token = bytes.joinToString("") { "%02x".format(it) }
-            sp.edit().putString("mjpeg_token", token).apply()
-            return token
-        }
 
     val brokerUri: String get() = "tcp://$brokerHost:$brokerPort"
 }

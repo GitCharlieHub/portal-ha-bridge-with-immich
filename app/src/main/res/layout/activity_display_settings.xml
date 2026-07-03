@@ -1,119 +1,88 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView
-    xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#1c1c1c">
+    android:background="@color/background"
+    android:padding="24dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:padding="16dp">
+        android:orientation="vertical">
 
-        <!-- Header -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginBottom="20dp">
+            android:layout_marginBottom="16dp">
 
             <Button
                 android:id="@+id/btn_back"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="← Back"
-                android:backgroundTint="#333333"
-                android:textColor="#ffffff"
-                android:layout_marginEnd="12dp" />
+                android:text="←  Back"
+                android:backgroundTint="#37474F" />
 
             <TextView
-                android:layout_width="0dp"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
                 android:text="Display &amp; Presence"
-                android:textColor="#ffffff"
-                android:textSize="18sp"
-                android:textStyle="bold" />
-
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="@color/onSurface"
+                android:layout_marginStart="16dp" />
         </LinearLayout>
 
-        <!-- Presence detection -->
+        <!-- Portal Presence -->
+        <Switch
+            android:id="@+id/sw_presence"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Portal Presence Detection"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="@color/onSurface"
+            android:paddingVertical="12dp" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Presence Detection"
-            android:textColor="#aaaaaa"
-            android:textSize="13sp"
-            android:textAllCaps="true"
-            android:layout_marginBottom="8dp" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginBottom="8dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Enable presence sensor"
-                android:textColor="#cccccc"
-                android:textSize="15sp" />
-
-            <Switch
-                android:id="@+id/sw_presence"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content" />
-
-        </LinearLayout>
+            android:text="Uses Portal's own person detection (no app camera needed) and adds a 'Portal Presence' occupancy sensor to Home Assistant. Requires a one-time adb permission."
+            android:textSize="12sp"
+            android:textColor="@color/hint"
+            android:layout_marginBottom="4dp" />
 
         <TextView
             android:id="@+id/tv_presence_status"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="#252525"
-            android:textColor="#cccccc"
-            android:textSize="13sp"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:textColor="@color/hint"
+            android:background="@color/surface"
             android:padding="10dp"
-            android:layout_marginBottom="20dp" />
+            android:layout_marginBottom="24dp" />
 
-        <!-- Screen timeout -->
+        <!-- Screen Off Timer -->
+        <Switch
+            android:id="@+id/sw_screen_timeout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Screen Off Timer"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="@color/onSurface"
+            android:paddingVertical="12dp" />
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Screen Timeout"
-            android:textColor="#aaaaaa"
-            android:textSize="13sp"
-            android:textAllCaps="true"
-            android:layout_marginBottom="8dp" />
+            android:text="Turns the screen off after the idle time below. Presence (if enabled) keeps it awake — the countdown starts when the room empties. Off = screen stays on indefinitely."
+            android:textSize="12sp"
+            android:textColor="@color/hint"
+            android:layout_marginBottom="12dp" />
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical"
-            android:layout_marginBottom="8dp">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Auto-sleep screen when idle"
-                android:textColor="#cccccc"
-                android:textSize="15sp" />
-
-            <Switch
-                android:id="@+id/sw_screen_timeout"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content" />
-
-        </LinearLayout>
-
-        <!-- Timeout minutes row — alpha-dimmed when timeout is disabled -->
         <LinearLayout
             android:id="@+id/row_timeout_mins"
             android:layout_width="match_parent"
@@ -123,25 +92,31 @@
             android:layout_marginBottom="20dp">
 
             <TextView
-                android:layout_width="0dp"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Sleep after (minutes)"
-                android:textColor="#cccccc"
-                android:textSize="14sp" />
+                android:text="Turn screen off after"
+                android:textSize="14sp"
+                android:textColor="@color/onSurface" />
 
             <EditText
                 android:id="@+id/et_timeout_minutes"
                 android:layout_width="64dp"
                 android:layout_height="wrap_content"
                 android:inputType="number"
-                android:textColor="#ffffff"
-                android:backgroundTint="#555555"
-                android:textAlignment="center" />
+                android:gravity="center"
+                android:textColor="@color/onSurface"
+                android:layout_marginStart="12dp"
+                android:layout_marginEnd="8dp" />
 
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="minutes"
+                android:textSize="14sp"
+                android:textColor="@color/onSurface" />
         </LinearLayout>
 
-        <!-- Temperature sensor section (shown only if hardware has the sensor) -->
+        <!-- Temperature calibration (only shown if the device has the sensor) -->
         <LinearLayout
             android:id="@+id/section_temp"
             android:layout_width="match_parent"
@@ -150,50 +125,54 @@
             android:visibility="gone">
 
             <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Temperature"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="@color/onSurface"
+                android:paddingTop="8dp" />
+
+            <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Temperature Sensor"
-                android:textColor="#aaaaaa"
-                android:textSize="13sp"
-                android:textAllCaps="true"
-                android:layout_marginBottom="8dp" />
+                android:text="This device's temperature sensor is uncalibrated. Read a real thermometer and set the offset so they match."
+                android:textSize="12sp"
+                android:textColor="@color/hint"
+                android:layout_marginBottom="12dp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
-                android:gravity="center_vertical"
-                android:layout_marginBottom="8dp">
+                android:gravity="center_vertical">
 
                 <TextView
-                    android:layout_width="0dp"
+                    android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="Calibration offset (°C)"
-                    android:textColor="#cccccc"
-                    android:textSize="14sp" />
+                    android:text="Offset"
+                    android:textSize="14sp"
+                    android:textColor="@color/onSurface" />
 
                 <EditText
                     android:id="@+id/et_temp_offset"
-                    android:layout_width="72dp"
+                    android:layout_width="80dp"
                     android:layout_height="wrap_content"
-                    android:inputType="numberSigned|numberDecimal"
-                    android:textColor="#ffffff"
-                    android:backgroundTint="#555555"
-                    android:textAlignment="center" />
+                    android:inputType="numberDecimal|numberSigned"
+                    android:gravity="center"
+                    android:textColor="@color/onSurface"
+                    android:layout_marginStart="12dp"
+                    android:layout_marginEnd="8dp" />
 
+                <TextView
+                    android:id="@+id/tv_temp_now"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="°C"
+                    android:textSize="14sp"
+                    android:textColor="@color/hint" />
             </LinearLayout>
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="The Portal temperature sensor reads the accelerometer die temperature, which runs 5–15°C above ambient. Adjust until it matches a real thermometer."
-                android:textColor="#666666"
-                android:textSize="12sp"
-                android:layout_marginBottom="16dp" />
-
         </LinearLayout>
 
     </LinearLayout>
-
 </ScrollView>
