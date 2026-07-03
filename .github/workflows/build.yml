@@ -20,8 +20,12 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
+      - name: Refresh Gradle wrapper
+        run: |
+          curl -sLo /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.6-bin.zip
+          unzip -q /tmp/gradle.zip -d /tmp/gradle-dist
+          /tmp/gradle-dist/gradle-8.6/bin/gradle wrapper --gradle-version 8.6 --distribution-type bin
+          chmod +x gradlew
 
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon
