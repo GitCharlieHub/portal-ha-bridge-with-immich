@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.http.SslError
 import android.os.Bundle
-import android.view.View
 import android.webkit.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.GravityCompat
@@ -13,9 +12,6 @@ import android.widget.Button
 import java.net.URI
 
 class DashboardActivity : AppCompatActivity() {
-
-    private enum class Mode { IMMICH_FRAME, HA_DASHBOARD }
-    private var currentMode = Mode.IMMICH_FRAME
 
     private lateinit var webView: WebView
     private lateinit var drawer: DrawerLayout
@@ -53,81 +49,25 @@ class DashboardActivity : AppCompatActivity() {
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest) {
-                // Grant camera/mic permissions only when the HA dashboard is active
-                // and the requesting origin matches the configured HA host.
-                // ImmichFrame is a photo viewer — it has no legitimate need for
-                // the device camera or microphone.
-                val origin = request.origin.toString().trimEnd('/')
-                val haOrigin = haOrigin()
-                if (currentMode == Mode.HA_DASHBOARD && haOrigin != null &&
-                        (origin == haOrigin || origin.startsWith("$haOrigin/"))) {
-                    request.grant(request.resources)
-                } else {
-                    android.util.Log.w("PortalHA",
-                        "Denied WebView permission request from $origin (mode=$currentMode haOrigin=$haOrigin)")
-                    request.deny()
-                }
+                // ImmichFrame is a photo viewer — deny all camera/mic requests.
+                android.util.Log.w("PortalHA",
+                    "Denied WebView permission request from ${request.origin}")
+                request.deny()
             }
         }
 
         webView.webViewClient = object : WebViewClient() {
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-                // Proceed only for addresses that are definitively on the local network
-                // (RFC 1918, link-local, localhost, .local mDNS). An external host with
-                // a bad certificate is rejected — the user likely has a URL typo.
-                if (isLocalUrl(error.url ?: "")) {
-                    handler.proceed()
-                } else {
-                    handler.cancel()
-                    showPlaceholder(
-                        "SSL certificate error for an external host.\n" +
-                        "Check the URL in Settings — only local-network addresses\n" +
-                        "(192.168.x.x, 10.x.x.x, hostname.local …) are accepted."
-                    )
-                }
+                if (isLocalUrl(error.url ?: "")) handler.proceed() else handler.cancel()
             }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) showPlaceholder("Failed to load — check the URL in Settings.")
+                if (request.isForMainFrame) showPlaceholder("Failed to load — check the ImmichFrame URL in Settings.")
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                // The WebView renderer died (usually OOM on a long-running
-                // dashboard). Rebuild the activity instead of crashing the app.
                 android.util.Log.w("PortalHA", "WebView renderer gone (crash=${detail.didCrash()}) — recreating")
                 recreate()
                 return true
             }
-            override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-                val url = request.url.toString()
-                if (url.startsWith("http://") || url.startsWith("https://")) return false
-                // Only forward intent:// URIs — they let HA cards launch Portal apps.
-                // All other non-http(s) schemes (market://, settings://, file://, etc.)
-                // are blocked silently; a local dashboard page has no legitimate reason
-                // to trigger them, and they're a vector for page-to-app attacks.
-                if (!url.startsWith("intent:")) {
-                    android.util.Log.w("PortalHA", "Blocked non-http(s)/non-intent scheme: $url")
-                    return true
-                }
-                runCatching {
-                    Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                        .also { it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                        .let { startActivity(it) }
-                }.onFailure {
-                    android.util.Log.w("PortalHA", "Could not launch intent: ${it.message}")
-                }
-                return true
-            }
-        }
-
-        // Default to ImmichFrame mode if it is configured, otherwise HA dashboard.
-        currentMode = if (prefs.immichFrameEnabled && prefs.immichFrameUrl.isNotBlank()) {
-            Mode.IMMICH_FRAME
-        } else {
-            Mode.HA_DASHBOARD
-        }
-
-        // Restore mode if the activity is being recreated (e.g. after renderer crash).
-        savedInstanceState?.getString("mode")?.let {
-            currentMode = if (it == "HA_DASHBOARD") Mode.HA_DASHBOARD else Mode.IMMICH_FRAME
         }
 
         findViewById<Button>(R.id.btn_open_settings).setOnClickListener {
@@ -135,90 +75,26 @@ class DashboardActivity : AppCompatActivity() {
             startActivity(Intent(this, MainActivity::class.java))
         }
 
-        // Toggle between ImmichFrame and HA dashboard
-        findViewById<Button>(R.id.btn_toggle_mode).setOnClickListener {
-            drawer.closeDrawers()
-            currentMode = if (currentMode == Mode.IMMICH_FRAME) Mode.HA_DASHBOARD else Mode.IMMICH_FRAME
-            updateModeButton()
-            loadCurrentMode()
-        }
-
         findViewById<Button>(R.id.btn_reload).setOnClickListener {
             drawer.closeDrawers()
-            loadCurrentMode()
+            loadImmichFrame()
         }
 
-        updateModeButton()
-        loadCurrentMode()
+        loadImmichFrame()
 
         // First run (nothing configured yet): drop straight into Settings.
-        val immichReady = prefs.immichFrameEnabled && prefs.immichFrameUrl.isNotBlank()
-        val haReady = prefs.haUrl.isNotBlank()
-        if (savedInstanceState == null && !immichReady && !haReady) {
+        if (savedInstanceState == null && prefs.immichFrameUrl.isBlank()) {
             startActivity(Intent(this, MainActivity::class.java))
         }
     }
 
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        outState.putString("mode", currentMode.name)
-    }
-
-    // Show the toggle button only when there is something to switch to.
-    private fun updateModeButton() {
-        val btn = findViewById<Button>(R.id.btn_toggle_mode)
-        when (currentMode) {
-            Mode.IMMICH_FRAME -> {
-                val hasHa = prefs.haUrl.isNotBlank()
-                btn.visibility = if (hasHa) View.VISIBLE else View.GONE
-                btn.text = "HA Dashboard"
-            }
-            Mode.HA_DASHBOARD -> {
-                val hasImmich = prefs.immichFrameEnabled && prefs.immichFrameUrl.isNotBlank()
-                btn.visibility = if (hasImmich) View.VISIBLE else View.GONE
-                btn.text = "Photo Frame"
-            }
+    private fun loadImmichFrame() {
+        val url = prefs.immichFrameUrl.trim()
+        if (url.isBlank()) {
+            showPlaceholder("ImmichFrame URL not set.\nSwipe from the left edge to open Settings.")
+        } else {
+            webView.loadUrl(normalise(url))
         }
-    }
-
-    private fun loadCurrentMode() {
-        when (currentMode) {
-            Mode.IMMICH_FRAME -> {
-                val url = prefs.immichFrameUrl.trim()
-                if (!prefs.immichFrameEnabled || url.isBlank()) {
-                    // ImmichFrame was disabled in Settings while it was already active.
-                    // Fall back to HA dashboard rather than keep showing a stale frame.
-                    currentMode = Mode.HA_DASHBOARD
-                    updateModeButton()
-                    loadCurrentMode()
-                    return
-                }
-                webView.loadUrl(normalise(url))
-            }
-            Mode.HA_DASHBOARD -> {
-                val url = prefs.haUrl.trim()
-                if (url.isBlank()) {
-                    showPlaceholder("Home Assistant URL not set.\nSwipe from the left edge to open Settings.")
-                } else {
-                    webView.loadUrl(normalise(url))
-                }
-            }
-        }
-    }
-
-    // Returns scheme+host+port for the configured HA URL, used to scope WebView
-    // permission grants. Returns null if the URL is blank or unparseable.
-    private fun haOrigin(): String? {
-        val url = prefs.haUrl.trim().ifBlank { return null }
-        return runCatching {
-            val u = URI(if (url.startsWith("http")) url else "http://$url")
-            buildString {
-                append(u.scheme ?: "http")
-                append("://")
-                append(u.host ?: return null)
-                if (u.port > 0) append(":${u.port}")
-            }
-        }.getOrNull()
     }
 
     // True for RFC 1918, link-local, localhost, and .local mDNS addresses.
@@ -260,18 +136,12 @@ class DashboardActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         enableImmersive()
-        // Re-acquire the camera if another app (e.g. the Portal launcher) took
-        // it while we were in the background.
         BridgeService.ensureCamera(this)
-        updateModeButton()
-        // Reload if the active mode's URL changed while we were in Settings.
-        val targetUrl = when (currentMode) {
-            Mode.IMMICH_FRAME -> prefs.immichFrameUrl
-            Mode.HA_DASHBOARD -> prefs.haUrl
-        }
+        // Reload if the ImmichFrame URL changed while we were in Settings.
+        val targetUrl = prefs.immichFrameUrl.trim()
         val current = webView.url ?: ""
         if (targetUrl.isNotEmpty() && !current.startsWith(normalise(targetUrl).trimEnd('/'))) {
-            loadCurrentMode()
+            loadImmichFrame()
         }
     }
 
