@@ -25,6 +25,9 @@ class MainActivity : AppCompatActivity() {
         prefs = Prefs(this)
         setContentView(R.layout.activity_main)
 
+        val etImmichFrameUrl = findViewById<EditText>(R.id.et_immich_frame_url)
+        etImmichFrameUrl.setText(prefs.immichFrameUrl)
+
         val etHaUrl = findViewById<EditText>(R.id.et_ha_url)
         etHaUrl.setText(prefs.haUrl)
 
@@ -94,6 +97,7 @@ class MainActivity : AppCompatActivity() {
             prefs.username = etUser.text.toString().trim()
             prefs.password = etPass.text.toString()
             prefs.deviceName = etName.text.toString().trim().ifEmpty { "Portal" }
+            prefs.immichFrameUrl = etImmichFrameUrl.text.toString().trim()
             prefs.haUrl = etHaUrl.text.toString().trim()
             prefs.haToken = etHaToken.text.toString().trim()
             BridgeService.stop(this)

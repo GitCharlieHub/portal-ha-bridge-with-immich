@@ -132,6 +132,24 @@
             android:textColor="@color/onSurface"
             android:layout_marginBottom="20dp" />
 
+        <!-- ImmichFrame -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="ImmichFrame"
+            android:textSize="14sp"
+            android:textColor="@color/colorAccent"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/et_immich_frame_url"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="ImmichFrame URL (e.g. http://192.168.1.10:3000)"
+            android:inputType="textUri"
+            android:textColor="@color/onSurface"
+            android:layout_marginBottom="20dp" />
+
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

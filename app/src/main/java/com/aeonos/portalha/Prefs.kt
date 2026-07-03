@@ -204,6 +204,10 @@ class Prefs(private val context: Context) {
         get() = sp.getString("ha_url", "") ?: ""
         set(v) = sp.edit().putString("ha_url", v).apply()
 
+    var immichFrameUrl: String
+        get() = sp.getString("immich_frame_url", "") ?: ""
+        set(v) = sp.edit().putString("immich_frame_url", v).apply()
+
     // Long-lived access token for Home Assistant's REST API, used by the Jarvis
     // tool-provider (AssistantToolProvider) for the smart-home passthrough. Create
     // one in HA: Profile -> Long-Lived Access Tokens. Stays on-device, never leaves.

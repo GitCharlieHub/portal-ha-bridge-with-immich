@@ -18,6 +18,9 @@ import android.widget.Toast
 
 class DashboardActivity : AppCompatActivity() {
 
+    private enum class Mode { IMMICH_FRAME, HA_DASHBOARD }
+    private var currentMode = Mode.IMMICH_FRAME
+
     private lateinit var webView: WebView
     private lateinit var drawer: DrawerLayout
     private lateinit var prefs: Prefs
@@ -81,11 +84,9 @@ class DashboardActivity : AppCompatActivity() {
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (request.isForMainFrame) showPlaceholder(
                     "Failed to load.<br><br>Swipe in from the <b>left edge</b> to open the menu, " +
-                    "then tap <b>Settings</b> to check your Home Assistant URL.")
+                    "then tap <b>Settings</b> to check the URL.")
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
-                // The WebView renderer died (usually OOM on a long-running
-                // dashboard). Rebuild the activity instead of crashing the app.
                 android.util.Log.w("PortalHA", "WebView renderer gone (crash=${detail.didCrash()}) — recreating dashboard")
                 recreate()
                 return true
@@ -93,8 +94,6 @@ class DashboardActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url.toString()
                 if (url.startsWith("http://") || url.startsWith("https://")) return false
-                // intent:// and other app schemes — WebView drops these silently,
-                // so hand them to Android (lets HA cards launch Portal apps).
                 runCatching {
                     val intent =
                         if (url.startsWith("intent:")) Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
@@ -108,6 +107,10 @@ class DashboardActivity : AppCompatActivity() {
             }
         }
 
+        // Restore mode across recreations (e.g. renderer crash, config change).
+        currentMode = if (savedInstanceState?.getString("mode") == "HA_DASHBOARD")
+            Mode.HA_DASHBOARD else Mode.IMMICH_FRAME
+
         findViewById<Button>(R.id.btn_open_settings).setOnClickListener {
             drawer.closeDrawers()
             startActivity(Intent(this, MainActivity::class.java))
@@ -115,20 +118,37 @@ class DashboardActivity : AppCompatActivity() {
 
         findViewById<Button>(R.id.btn_reload).setOnClickListener {
             drawer.closeDrawers()
-            loadDashboard()
+            loadCurrentMode()
+        }
+
+        findViewById<Button>(R.id.btn_toggle_mode).setOnClickListener {
+            drawer.closeDrawers()
+            currentMode = if (currentMode == Mode.IMMICH_FRAME) Mode.HA_DASHBOARD else Mode.IMMICH_FRAME
+            updateToggleButton()
+            loadCurrentMode()
         }
 
         setupIntercom()
-
-        loadDashboard()
+        updateToggleButton()
+        loadCurrentMode()
 
         // First run (nothing configured yet): drop straight into Settings rather
         // than showing the empty dashboard placeholder. Only on a genuine fresh
         // create — savedInstanceState guards against config-change recreation,
         // and onCreate (not onResume) means backing out of Settings won't loop.
-        if (savedInstanceState == null && prefs.haUrl.isBlank()) {
+        if (savedInstanceState == null && prefs.haUrl.isBlank() && prefs.immichFrameUrl.isBlank()) {
             startActivity(Intent(this, MainActivity::class.java))
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString("mode", currentMode.name)
+    }
+
+    private fun updateToggleButton() {
+        val btn = findViewById<Button>(R.id.btn_toggle_mode)
+        btn.text = if (currentMode == Mode.IMMICH_FRAME) "HA Dashboard" else "Photo Frame"
     }
 
     // Hide the status/navigation bars for a full-screen kiosk view. STICKY so a
@@ -166,11 +186,14 @@ class DashboardActivity : AppCompatActivity() {
         // Re-acquire the camera if another app (e.g. the Portal launcher) took
         // it while we were in the background.
         BridgeService.ensureCamera(this)
-        // Reload if URL changed in settings
-        val url = prefs.haUrl
+        // Reload if the active mode's URL changed in Settings.
+        val targetUrl = when (currentMode) {
+            Mode.IMMICH_FRAME -> prefs.immichFrameUrl
+            Mode.HA_DASHBOARD -> prefs.haUrl
+        }
         val current = webView.url ?: ""
-        if (url.isNotEmpty() && !current.startsWith(normalise(url).trimEnd('/'))) {
-            loadDashboard()
+        if (targetUrl.isNotEmpty() && !current.startsWith(normalise(targetUrl).trimEnd('/'))) {
+            loadCurrentMode()
         }
     }
 
@@ -249,14 +272,22 @@ class DashboardActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadDashboard() {
-        val url = prefs.haUrl.trim()
-        if (url.isEmpty()) {
-            showPlaceholder(
-                "Swipe in from the <b>left edge</b> to open the menu, " +
-                "then tap <b>Settings</b> to enter your Home Assistant URL.")
-        } else {
-            webView.loadUrl(normalise(url))
+    private fun loadCurrentMode() {
+        when (currentMode) {
+            Mode.IMMICH_FRAME -> {
+                val url = prefs.immichFrameUrl.trim()
+                if (url.isEmpty()) showPlaceholder(
+                    "ImmichFrame URL not set.<br><br>Swipe in from the <b>left edge</b> " +
+                    "to open the menu, then tap <b>Settings</b> to enter the ImmichFrame URL.")
+                else webView.loadUrl(normalise(url))
+            }
+            Mode.HA_DASHBOARD -> {
+                val url = prefs.haUrl.trim()
+                if (url.isEmpty()) showPlaceholder(
+                    "Home Assistant URL not set.<br><br>Swipe in from the <b>left edge</b> " +
+                    "to open the menu, then tap <b>Settings</b> to enter your Home Assistant URL.")
+                else webView.loadUrl(normalise(url))
+            }
         }
     }
 
