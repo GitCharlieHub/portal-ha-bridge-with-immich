@@ -22,8 +22,8 @@ android {
         // 28 = Android 9 (Portal+); 29 = Android 10 (Portal / Portal Mini).
         minSdk = 28
         targetSdk = 35
-        versionCode = 22
-        versionName = "1.6.4-immich"
+        versionCode = 23
+        versionName = "1.6.5-immich"
     }
 
     signingConfigs {

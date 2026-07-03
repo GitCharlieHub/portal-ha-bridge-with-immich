@@ -118,6 +118,16 @@ class BridgeService : Service(), MqttCallbackExtended {
     private val timeoutHandler = Handler(Looper.getMainLooper())
     private val timeoutRunnable = Runnable { ScreenControl.sleep() }
 
+    // Polls every 30 s so a camera drop (Portal OS revoking access mid-stream)
+    // is recovered without waiting for the next DashboardActivity.onResume().
+    private val cameraWatchdog = object : Runnable {
+        override fun run() {
+            if (!isStarted) return
+            ensureCameraState()
+            workerHandler.postDelayed(this, 30_000L)
+        }
+    }
+
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val on = intent.action == Intent.ACTION_SCREEN_ON
@@ -186,6 +196,7 @@ class BridgeService : Service(), MqttCallbackExtended {
     override fun onDestroy() {
         isStarted = false
         timeoutHandler.removeCallbacks(timeoutRunnable)
+        workerHandler.removeCallbacks(cameraWatchdog)
         orientationListener?.disable()
         orientationListener = null
         runCatching { unregisterReceiver(screenReceiver) }
@@ -217,6 +228,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         // Camera is NOT started here. DashboardActivity.onResume() calls
         // ensureCamera() once we are truly foreground — Portal blocks camera
         // from background processes, so attempting it here causes crashes.
+        workerHandler.postDelayed(cameraWatchdog, 30_000L)
         applyDisplaySettingsInternal()
         mainHandler.post { startOrientationListener() }
     }
@@ -697,11 +709,15 @@ class BridgeService : Service(), MqttCallbackExtended {
         val rs = RtspStreamer(this, 8554).apply {
             rotationOffset = prefs.streamRotation
             if (lastAutoRotation >= 0) autoRotation = lastAutoRotation
+            onDropped = {
+                Log.w(TAG, "RTSP stream dropped; restarting in 3 s")
+                workerHandler.postDelayed({ if (isStarted) { stopRtsp(); startRtsp() } }, 3_000L)
+            }
         }
         if (rs.start(1280, 720, 15, 2_000_000, false)) {
             rtspStreamer = rs
         } else {
-            Log.w(TAG, "RTSP start failed")
+            Log.w(TAG, "RTSP start failed; watchdog will retry in 30 s")
         }
     }
 

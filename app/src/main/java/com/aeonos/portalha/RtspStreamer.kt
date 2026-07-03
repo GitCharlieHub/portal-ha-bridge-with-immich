@@ -20,8 +20,14 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     companion object { private const val TAG = "PortalHA" }
 
     private var stream: RtspServerStream? = null
-    @Volatile var isStreaming = false
-        private set
+
+    // Reflects the library's actual streaming state, not a cached flag, so that
+    // if Portal revokes the camera mid-stream the watchdog sees the truth.
+    val isStreaming: Boolean get() = stream?.isStreaming() == true
+
+    // Called by BridgeService when the stream drops unexpectedly so it can
+    // schedule a restart without waiting for the next onResume().
+    var onDropped: (() -> Unit)? = null
     // Manual base offset (deg, 0/90/180/270) from the ROTATE button. 0 = camera
     // native landscape. Corrects the base on top of the accelerometer auto value.
     @Volatile var rotationOffset = 0
@@ -89,7 +95,6 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
             val audioOk = s.prepareAudio(16000, false, 64_000)
             if (videoOk && audioOk) {
                 s.startStream()
-                isStreaming = true
                 Log.i(TAG, "RTSP streaming on ${url()} ${encW}x${encH} rot=$rot squash=$squashedFrontCam (audio=$withAudio)")
                 true
             } else {
@@ -114,7 +119,7 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     }
 
     fun stop() {
-        isStreaming = false
+        onDropped = null   // prevent the drop callback firing during an intentional stop
         runCatching { stream?.stopStream() }
         stream = null
         Log.i(TAG, "RTSP streaming stopped")
@@ -122,7 +127,10 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
 
     override fun onConnectionStarted(url: String) { Log.i(TAG, "rtsp client connecting: $url") }
     override fun onConnectionSuccess() { Log.i(TAG, "rtsp client connected") }
-    override fun onConnectionFailed(reason: String) { Log.w(TAG, "rtsp failed: $reason") }
+    override fun onConnectionFailed(reason: String) {
+        Log.w(TAG, "rtsp failed: $reason")
+        onDropped?.invoke()
+    }
     override fun onNewBitrate(bitrate: Long) { }
     override fun onDisconnect() { Log.i(TAG, "rtsp client disconnected") }
     override fun onAuthError() { Log.w(TAG, "rtsp auth error") }
