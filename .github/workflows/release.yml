@@ -1,13 +1,9 @@
 name: Release APK
 
 on:
-  workflow_dispatch:
-    inputs:
-      version:
-        description: 'Release version tag (e.g. v1.6.5-immich)'
-        required: true
   push:
     tags: ['v*']
+    branches: ['release/**']
 
 jobs:
   release:
@@ -17,6 +13,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-java@v4
         with:
@@ -39,19 +37,19 @@ jobs:
       - name: Determine release tag
         id: tag
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          if [[ "$GITHUB_REF" == refs/heads/release/* ]]; then
+            echo "tag=${GITHUB_REF#refs/heads/release/}" >> $GITHUB_OUTPUT
           else
             echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create tag (workflow_dispatch only)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Create and push tag (branch-triggered release)
+        if: startsWith(github.ref, 'refs/heads/release/')
         run: |
           git config user.email "action@github.com"
           git config user.name "GitHub Actions"
-          git tag ${{ steps.tag.outputs.tag }}
-          git push origin ${{ steps.tag.outputs.tag }}
+          git tag ${{ steps.tag.outputs.tag }} HEAD || true
+          git push origin ${{ steps.tag.outputs.tag }} || true
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
