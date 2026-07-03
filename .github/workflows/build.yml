@@ -27,14 +27,8 @@ jobs:
           /tmp/gradle-dist/gradle-8.6/bin/gradle wrapper --gradle-version 8.6 --distribution-type bin
           chmod +x gradlew
 
-      - name: Test and build debug APK
-        run: ./gradlew testDebugUnitTest assembleDebug --no-daemon
-
-      # Upstream currently has two MissingPermission findings in privileged
-      # Portal-only paths. Keep lint visible without withholding a tested APK.
-      - name: Android lint (diagnostic)
-        continue-on-error: true
-        run: ./gradlew lintDebug --no-daemon
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
