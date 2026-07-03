@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.http.SslError
 import android.os.Bundle
 import android.webkit.*
+import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.GravityCompat
 import androidx.drawerlayout.widget.DrawerLayout
@@ -12,6 +13,7 @@ import android.widget.Button
 
 class DashboardActivity : AppCompatActivity() {
 
+    private var currentMode = DashboardMode.HA_DASHBOARD
     private lateinit var webView: WebView
     private lateinit var drawer: DrawerLayout
     private lateinit var prefs: Prefs
@@ -48,14 +50,15 @@ class DashboardActivity : AppCompatActivity() {
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest) {
-                // Grant media permissions so HA calls work inside the WebView
-                request.grant(request.resources)
+                val allowed = currentMode == DashboardMode.HA_DASHBOARD &&
+                    isAllowedMediaOrigin(request.origin.toString(), prefs.haUrl)
+                if (allowed) request.grant(request.resources) else request.deny()
             }
         }
 
         webView.webViewClient = object : WebViewClient() {
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-                handler.proceed() // Accept self-signed certs for local HA
+                if (isLocalDashboardUrl(error.url ?: "")) handler.proceed() else handler.cancel()
             }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (request.isForMainFrame) showPlaceholder("Failed to load — check the URL in Settings.")
@@ -70,12 +73,9 @@ class DashboardActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url.toString()
                 if (url.startsWith("http://") || url.startsWith("https://")) return false
-                // intent:// and other app schemes — WebView drops these silently,
-                // so hand them to Android (lets HA cards launch Portal apps).
+                if (!isAllowedExternalNavigation(url)) return true
                 runCatching {
-                    val intent =
-                        if (url.startsWith("intent:")) Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                        else Intent(Intent.ACTION_VIEW, request.url)
+                    val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(intent)
                 }.onFailure {
@@ -90,18 +90,36 @@ class DashboardActivity : AppCompatActivity() {
             startActivity(Intent(this, MainActivity::class.java))
         }
 
+        currentMode = initialDashboardMode(
+            immichEnabled = prefs.immichFrameEnabled,
+            immichUrl = prefs.immichFrameUrl
+        )
+
+        findViewById<Button>(R.id.btn_toggle_mode).setOnClickListener {
+            drawer.closeDrawers()
+            currentMode = if (currentMode == DashboardMode.IMMICH_FRAME) {
+                DashboardMode.HA_DASHBOARD
+            } else {
+                DashboardMode.IMMICH_FRAME
+            }
+            updateModeButton()
+            loadDashboard()
+        }
+
         findViewById<Button>(R.id.btn_reload).setOnClickListener {
             drawer.closeDrawers()
             loadDashboard()
         }
 
+        updateModeButton()
         loadDashboard()
 
         // First run (nothing configured yet): drop straight into Settings rather
         // than showing the empty dashboard placeholder. Only on a genuine fresh
         // create — savedInstanceState guards against config-change recreation,
         // and onCreate (not onResume) means backing out of Settings won't loop.
-        if (savedInstanceState == null && prefs.haUrl.isBlank()) {
+        val immichReady = prefs.immichFrameEnabled && prefs.immichFrameUrl.isNotBlank()
+        if (savedInstanceState == null && prefs.haUrl.isBlank() && !immichReady) {
             startActivity(Intent(this, MainActivity::class.java))
         }
     }
@@ -134,25 +152,50 @@ class DashboardActivity : AppCompatActivity() {
         // it while we were in the background.
         BridgeService.ensureCamera(this)
         // Reload if URL changed in settings
-        val url = prefs.haUrl
+        if (currentMode == DashboardMode.IMMICH_FRAME &&
+            (!prefs.immichFrameEnabled || prefs.immichFrameUrl.isBlank())
+        ) {
+            currentMode = DashboardMode.HA_DASHBOARD
+        }
+        updateModeButton()
+        val url = activeUrl()
         val current = webView.url ?: ""
-        if (url.isNotEmpty() && !current.startsWith(normalise(url).trimEnd('/'))) {
+        if (url.isNotEmpty() && !current.startsWith(normaliseDashboardUrl(url).trimEnd('/'))) {
             loadDashboard()
         }
     }
 
     private fun loadDashboard() {
-        val url = prefs.haUrl.trim()
+        val url = activeUrl().trim()
         if (url.isEmpty()) {
-            showPlaceholder("Swipe from the left edge to open Settings\nand enter your Home Assistant URL.")
+            val target = if (currentMode == DashboardMode.IMMICH_FRAME) "ImmichFrame" else "Home Assistant"
+            showPlaceholder("Swipe from the left edge to open Settings\nand enter your $target URL.")
         } else {
-            webView.loadUrl(normalise(url))
+            webView.loadUrl(normaliseDashboardUrl(url))
         }
     }
 
-    private fun normalise(url: String) = when {
-        url.startsWith("http://") || url.startsWith("https://") -> url
-        else -> "http://$url"
+    private fun activeUrl() = when (currentMode) {
+        DashboardMode.IMMICH_FRAME -> prefs.immichFrameUrl
+        DashboardMode.HA_DASHBOARD -> prefs.haUrl
+    }
+
+    private fun updateModeButton() {
+        val button = findViewById<Button>(R.id.btn_toggle_mode)
+        when (currentMode) {
+            DashboardMode.IMMICH_FRAME -> {
+                button.text = "HA Dashboard"
+                button.visibility = if (prefs.haUrl.isNotBlank()) View.VISIBLE else View.GONE
+            }
+            DashboardMode.HA_DASHBOARD -> {
+                button.text = "Photo Frame"
+                button.visibility = if (prefs.immichFrameEnabled && prefs.immichFrameUrl.isNotBlank()) {
+                    View.VISIBLE
+                } else {
+                    View.GONE
+                }
+            }
+        }
     }
 
     private fun showPlaceholder(message: String) {

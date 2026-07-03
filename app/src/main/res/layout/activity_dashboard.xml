@@ -39,6 +39,14 @@
             android:layout_marginBottom="12dp" />
 
         <Button
+            android:id="@+id/btn_toggle_mode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="HA Dashboard"
+            android:backgroundTint="#3A3A5C"
+            android:layout_marginBottom="12dp" />
+
+        <Button
             android:id="@+id/btn_reload"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

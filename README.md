@@ -1,8 +1,15 @@
-# Portal HA Bridge
+# Portal HA Bridge v1.6.0 - ImmichFrame Edition
 
 Turn a **Meta Portal** into a fully-fledged **Home Assistant** device — screen control, camera streaming, motion & presence detection, ambient sensors, sound level, and more — all exposed automatically over **MQTT auto-discovery**.
 
-It runs as a persistent background service plus an optional full-screen HA dashboard (kiosk). Nothing is sent anywhere except your own MQTT broker and Home Assistant.
+This fork keeps the basic functionality and camera lifecycle of Portal HA Bridge
+v1.6.0. It adds an ImmichFrame photo slideshow inside the existing foreground
+dashboard Activity, so the Portal HA Bridge app remains visible while photos are
+shown. It intentionally excludes features introduced after v1.6.0, including
+intercom and announce/broadcast controls.
+
+Nothing is sent anywhere except your own MQTT broker, Home Assistant, and the
+ImmichFrame server URL you configure.
 
 > Unofficial, third-party project. Not affiliated with or endorsed by Meta.
 
@@ -67,7 +74,13 @@ This installs the APK, grants every permission/app-op (all require ADB — they 
 > No computer? You can install the APK and grant **most** things via the app's permission prompts — but **screen sleep needs one ADB grant** (`WRITE_SECURE_SETTINGS`), because Meta hides accessibility services from Portal's Settings. See [SETUP.md](SETUP.md).
 
 ### 3. Configure
-Open **Portal HA Bridge** on the device and enter your **MQTT broker** host/port/credentials and a **device name** (this becomes the HA device + entity prefix). Save & restart.
+Open **Portal HA Bridge** on the device and enter your **MQTT broker**
+host/port/credentials and a **device name**. To use the photo frame, enable
+**ImmichFrame** and enter its local URL. Save and restart the service.
+
+ImmichFrame opens by default when enabled. Swipe from the left edge and use
+**HA Dashboard** or **Photo Frame** to switch the same foreground WebView between
+the two pages.
 
 The HA device appears automatically.
 
@@ -179,7 +192,8 @@ app/src/main/java/com/aeonos/portalha/
   ScreenControl.kt / ScreenAccessibility.kt   Sleep/wake
   MediaKeepAlive.kt     Stops the launcher idle-kicking the app
   TonePlayer.kt         Doorbell / alert tones
-  DashboardActivity.kt  Full-screen HA WebView (kiosk)
+  DashboardActivity.kt  Foreground HA / ImmichFrame WebView (kiosk)
+  DashboardPolicy.kt    Mode, URL, origin, and navigation policy
   MainActivity.kt       Settings / configuration UI
   Prefs.kt              SharedPreferences wrapper
 provision.ps1           One-shot device setup (install + permissions + launcher)

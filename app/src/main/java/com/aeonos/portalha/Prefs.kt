@@ -122,5 +122,13 @@ class Prefs(private val context: Context) {
         get() = sp.getString("ha_url", "") ?: ""
         set(v) = sp.edit().putString("ha_url", v).apply()
 
+    var immichFrameEnabled: Boolean
+        get() = sp.getBoolean("immich_frame_enabled", false)
+        set(v) = sp.edit().putBoolean("immich_frame_enabled", v).apply()
+
+    var immichFrameUrl: String
+        get() = sp.getString("immich_frame_url", "") ?: ""
+        set(v) = sp.edit().putString("immich_frame_url", v).apply()
+
     val brokerUri: String get() = "tcp://$brokerHost:$brokerPort"
 }

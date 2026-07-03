@@ -22,8 +22,8 @@ android {
         // 28 = Android 9 (Portal+); 29 = Android 10 (Portal / Portal Mini).
         minSdk = 28
         targetSdk = 35
-        versionCode = 17
-        versionName = "1.6.0"
+        versionCode = 18
+        versionName = "1.6.0-immichframe"
     }
 
     signingConfigs {
@@ -65,4 +65,6 @@ dependencies {
     // build cleanly under our Kotlin 2.0.20 — no metadata hacks.
     implementation("com.github.pedroSG94:RTSP-Server:1.3.0")
     implementation("com.github.pedroSG94.RootEncoder:library:2.4.6")
+
+    testImplementation("junit:junit:4.13.2")
 }
