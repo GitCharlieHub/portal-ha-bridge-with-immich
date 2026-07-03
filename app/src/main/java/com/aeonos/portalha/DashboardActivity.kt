@@ -15,6 +15,7 @@ import android.widget.Button
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import java.net.URI
 
 class DashboardActivity : AppCompatActivity() {
 
@@ -62,18 +63,15 @@ class DashboardActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_DEFAULT
         }
 
-        // Speak HA's frontend "external app" protocol so the dashboard treats us as a native
-        // wrapper (native settings entry + working voice button + no-logout auth). CAUTION: once
-        // window.externalApp exists, the frontend routes AUTH through us (getExternalAuth) — so we
-        // only inject the bridge when a long-lived token is configured to answer it. Without a token
-        // there's nothing to authenticate with, and the dashboard would hang on the loading screen.
-        if (prefs.haToken.isNotBlank())
-            webView.addJavascriptInterface(HaExternalBridge(this, webView, prefs), "externalApp")
-
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest) {
-                // Grant media permissions so HA calls work inside the WebView
-                request.grant(request.resources)
+                val origin = request.origin.toString().trimEnd('/')
+                val haOrigin = configuredHaOrigin()
+                if (currentMode == Mode.HA_DASHBOARD && haOrigin != null && origin == haOrigin) {
+                    request.grant(request.resources)
+                } else {
+                    request.deny()
+                }
             }
         }
 
@@ -107,9 +105,14 @@ class DashboardActivity : AppCompatActivity() {
             }
         }
 
-        // Restore mode across recreations (e.g. renderer crash, config change).
-        currentMode = if (savedInstanceState?.getString("mode") == "HA_DASHBOARD")
-            Mode.HA_DASHBOARD else Mode.IMMICH_FRAME
+        // Prefer ImmichFrame when configured; otherwise retain upstream's HA dashboard.
+        currentMode = when {
+            savedInstanceState?.getString("mode") == "HA_DASHBOARD" -> Mode.HA_DASHBOARD
+            savedInstanceState?.getString("mode") == "IMMICH_FRAME" -> Mode.IMMICH_FRAME
+            DashboardTargetSelector.select(prefs.immichFrameUrl, prefs.haUrl) ==
+                DashboardTarget.IMMICH_FRAME -> Mode.IMMICH_FRAME
+            else -> Mode.HA_DASHBOARD
+        }
 
         findViewById<Button>(R.id.btn_open_settings).setOnClickListener {
             drawer.closeDrawers()
@@ -148,6 +151,11 @@ class DashboardActivity : AppCompatActivity() {
 
     private fun updateToggleButton() {
         val btn = findViewById<Button>(R.id.btn_toggle_mode)
+        btn.visibility = if (prefs.immichFrameUrl.isNotBlank() && prefs.haUrl.isNotBlank()) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
         btn.text = if (currentMode == Mode.IMMICH_FRAME) "HA Dashboard" else "Photo Frame"
     }
 
@@ -186,6 +194,13 @@ class DashboardActivity : AppCompatActivity() {
         // Re-acquire the camera if another app (e.g. the Portal launcher) took
         // it while we were in the background.
         BridgeService.ensureCamera(this)
+        if (currentMode == Mode.IMMICH_FRAME && prefs.immichFrameUrl.isBlank()) {
+            currentMode = Mode.HA_DASHBOARD
+        } else if (currentMode == Mode.HA_DASHBOARD && prefs.haUrl.isBlank() &&
+            prefs.immichFrameUrl.isNotBlank()) {
+            currentMode = Mode.IMMICH_FRAME
+        }
+        updateToggleButton()
         // Reload if the active mode's URL changed in Settings.
         val targetUrl = when (currentMode) {
             Mode.IMMICH_FRAME -> prefs.immichFrameUrl
@@ -273,6 +288,7 @@ class DashboardActivity : AppCompatActivity() {
     }
 
     private fun loadCurrentMode() {
+        configureHaBridgeForCurrentMode()
         when (currentMode) {
             Mode.IMMICH_FRAME -> {
                 val url = prefs.immichFrameUrl.trim()
@@ -290,6 +306,24 @@ class DashboardActivity : AppCompatActivity() {
             }
         }
     }
+
+    private fun configureHaBridgeForCurrentMode() {
+        webView.removeJavascriptInterface("externalApp")
+        if (currentMode == Mode.HA_DASHBOARD && prefs.haToken.isNotBlank()) {
+            webView.addJavascriptInterface(HaExternalBridge(this, webView, prefs), "externalApp")
+        }
+    }
+
+    private fun configuredHaOrigin(): String? = runCatching {
+        val raw = prefs.haUrl.trim().ifBlank { return null }
+        val uri = URI(normalise(raw))
+        buildString {
+            append(uri.scheme)
+            append("://")
+            append(uri.host ?: return null)
+            if (uri.port >= 0) append(":${uri.port}")
+        }
+    }.getOrNull()
 
     private fun normalise(url: String) = when {
         url.startsWith("http://") || url.startsWith("https://") -> url

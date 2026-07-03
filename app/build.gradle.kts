@@ -22,8 +22,8 @@ android {
         // 28 = Android 9 (Portal+); 29 = Android 10 (Portal / Portal Mini).
         minSdk = 28
         targetSdk = 35
-        versionCode = 35
-        versionName = "1.16.0-immich"
+        versionCode = 36
+        versionName = "1.16.1-immich"
 
         // Portals are ARM — ship only ARM native libs (Vosk/RootEncoder bundle x86 +
         // x86_64 + mips for emulators, ~20 MB of dead weight on real hardware).
@@ -81,4 +81,6 @@ dependencies {
     // the wake word is changeable without a new model. The ~40 MB model is downloaded
     // to filesDir on first enable (keeps the APK small), not bundled.
     implementation("com.alphacephei:vosk-android:0.3.75")
+
+    testImplementation("junit:junit:4.13.2")
 }
