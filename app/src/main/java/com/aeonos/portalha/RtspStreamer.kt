@@ -29,6 +29,8 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     // BridgeService's OrientationEventListener — keeps the stream upright as the
     // Portal is physically turned (the OS display rotation is locked).
     @Volatile var autoRotation = 0
+    // Called on the ConnectChecker thread when the last client disconnects.
+    var onDropped: (() -> Unit)? = null
 
     // Both Portal+ models ("aloha" 1st-gen, "cipher" 2nd-gen) have a front camera
     // whose usable cam (Camera 0) reports only 1280x720 + 4:3 sizes but whose true
@@ -124,7 +126,7 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     override fun onConnectionSuccess() { Log.i(TAG, "rtsp client connected") }
     override fun onConnectionFailed(reason: String) { Log.w(TAG, "rtsp failed: $reason") }
     override fun onNewBitrate(bitrate: Long) { }
-    override fun onDisconnect() { Log.i(TAG, "rtsp client disconnected") }
+    override fun onDisconnect() { Log.i(TAG, "rtsp client disconnected"); onDropped?.invoke() }
     override fun onAuthError() { Log.w(TAG, "rtsp auth error") }
     override fun onAuthSuccess() { Log.i(TAG, "rtsp auth success") }
 }
