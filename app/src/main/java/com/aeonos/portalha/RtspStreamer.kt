@@ -2,10 +2,10 @@ package com.aeonos.portalha
 
 import android.content.Context
 import android.media.MediaCodecInfo
-import android.media.MediaRecorder
 import android.util.Log
 import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.video.CameraHelper
+import com.pedro.encoder.utils.CodecUtil
 import com.pedro.library.util.sources.audio.MicrophoneSource
 import com.pedro.library.util.sources.audio.NoAudioSource
 import com.pedro.library.util.sources.video.Camera2Source
@@ -63,15 +63,15 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
             // (empty here), so build the source explicitly on FRONT.
             val video = Camera2Source(context)
             if (video.getCameraFacing() != CameraHelper.Facing.FRONT) video.switchCamera()
-            // NoAudioSource does NOT open the mic — critical so the RTSP stream
-            // doesn't hold the mic and starve/garble Portal calls (and so it doesn't
-            // fight the SoundMonitor). prepareAudio() is still called below to satisfy
-            // startStream(); that leaves an empty AAC track in the SDP (harmless;
-            // HA/WebRTC uses #video=copy). withAudio kept for a future real mic-share.
-            val audio = if (withAudio) MicrophoneSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+            // SoundMonitor is stopped before this path, leaving the mic exclusively
+            // available to the stream. Video-only mode keeps using NoAudioSource.
+            val audio = if (withAudio) MicrophoneSource(RtspAudioConfig.audioSource)
                         else NoAudioSource()
             val s = RtspServerStream(context, port, this, video, audio)
             stream = s
+            // The Portal's Qualcomm AAC encoder emits malformed frames. Keep the
+            // proven hardware H.264 path, but use Android's software AAC encoder.
+            s.forceCodecType(CodecUtil.CodecType.HARDWARE, RtspAudioConfig.codecType)
             // Pass the LANDSCAPE capture dims + rotation; prepareVideo swaps the
             // ENCODER size itself for 90/270 (don't pre-swap — that double-swaps).
             val rot = currentRotation()
