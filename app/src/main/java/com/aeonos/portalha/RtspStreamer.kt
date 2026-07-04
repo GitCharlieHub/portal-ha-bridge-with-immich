@@ -86,9 +86,9 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
                 Log.w(TAG, "Constrained-Baseline prepare failed; using encoder default profile")
                 videoOk = s.prepareVideo(encW, encH, bitrate, fps, 2, rot)
             }
-            // Always prepare the audio encoder — startStream() requires it even with
-            // NoAudioSource (NoAudioSource just means no mic is opened, no data fed).
-            val audioOk = s.prepareAudio(16000, false, 64_000)
+            // 44.1 kHz mono AAC — standard rate expected by VLC, FFmpeg, and Frigate.
+            // 16 kHz caused A/V timestamp desync where clients decoded audio but never played it.
+            val audioOk = s.prepareAudio(44100, false, 128_000)
             if (videoOk && audioOk) {
                 s.startStream()
                 isStreaming = true
