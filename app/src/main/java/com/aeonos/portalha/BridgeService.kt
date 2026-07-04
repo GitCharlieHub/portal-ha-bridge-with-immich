@@ -114,6 +114,8 @@ class BridgeService : Service(), MqttCallbackExtended {
 
     private var orientationListener: OrientationEventListener? = null
     private var lastAutoRotation = -1
+    // True while the RTSP stream holds the mic so stopRtsp() knows to restart SoundMonitor.
+    @Volatile private var rtspHeldMic = false
 
     private val timeoutHandler = Handler(Looper.getMainLooper())
     private val timeoutRunnable = Runnable { ScreenControl.sleep() }
@@ -216,7 +218,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         super.onDestroy()
     }
 
-    // ── Service startup ───────────────────────────────────────────────────────
+    // ── Service startup ──────────────────────────────────────────────────────
 
     private fun startAllServices() {
         mainHandler.post { mediaKeepAlive.start(this) }
@@ -233,7 +235,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         mainHandler.post { startOrientationListener() }
     }
 
-    // ── Screen receiver ───────────────────────────────────────────────────────
+    // ── Screen receiver ─────────────────────────────────────────────────
 
     private fun registerScreenReceiver() {
         val filter = IntentFilter().apply {
@@ -243,7 +245,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         runCatching { registerReceiver(screenReceiver, filter) }
     }
 
-    // ── SYSTEM_ALERT_WINDOW overlay (keeps process "visible") ─────────────────
+    // ── SYSTEM_ALERT_WINDOW overlay (keeps process “visible”) ─────────────────
 
     private fun addOverlay() {
         if (!Settings.canDrawOverlays(this)) return
@@ -302,7 +304,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         companion object { private const val TAG = "PortalHA" }
     }
 
-    // ── Sensors ───────────────────────────────────────────────────────────────
+    // ── Sensors ────────────────────────────────────────────────────────────
 
     private fun startSensors() {
         val sb = SensorBridge(this) { topic, payload, qos -> publish(topic, payload, qos) }
@@ -316,7 +318,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         soundMonitor = sm
     }
 
-    // ── Presence ──────────────────────────────────────────────────────────────
+    // ── Presence ──────────────────────────────────────────────────────────
 
     private fun startPresenceIfEnabled() {
         if (!prefs.presenceEnabled) return
@@ -329,7 +331,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         presenceMonitor = pm
     }
 
-    // ── MQTT ──────────────────────────────────────────────────────────────────
+    // ── MQTT ──────────────────────────────────────────────────────────────
 
     private fun connectMqtt() {
         synchronized(mqttLock) {
@@ -382,7 +384,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         }
     }
 
-    // MqttCallbackExtended ────────────────────────────────────────────────────
+    // MqttCallbackExtended ────────────────────────────────────────────
 
     override fun connectComplete(reconnect: Boolean, serverURI: String) {
         Log.i(TAG, "MQTT connectComplete reconnect=$reconnect")
@@ -651,7 +653,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         runCatching { mqtt?.publish(topic, payload.toByteArray(), qos, retained) }
     }
 
-    // ── Camera management ─────────────────────────────────────────────────────
+    // ── Camera management ─────────────────────────────────────────────────
 
     private fun applyCameraState() {
         if (!prefs.cameraServiceEnabled || !prefs.cameraOn) {
@@ -706,6 +708,12 @@ class BridgeService : Service(), MqttCallbackExtended {
 
     private fun startRtsp() {
         if (rtspStreamer?.isStreaming == true) return
+        // Release the mic so the RTSP audio source can open it.
+        // SoundMonitor.stop() sets a flag; the capture thread may hold AudioRecord
+        // for up to one read buffer (~400 ms), so we wait before opening RTSP audio.
+        soundMonitor?.stop()
+        rtspHeldMic = true
+        runCatching { Thread.sleep(400) }
         val rs = RtspStreamer(this, 8554).apply {
             rotationOffset = prefs.streamRotation
             if (lastAutoRotation >= 0) autoRotation = lastAutoRotation
@@ -714,10 +722,12 @@ class BridgeService : Service(), MqttCallbackExtended {
                 workerHandler.postDelayed({ if (isStarted) { stopRtsp(); startRtsp() } }, 3_000L)
             }
         }
-        if (rs.start(1280, 720, 15, 2_000_000, false)) {
+        if (rs.start(1280, 720, 15, 2_000_000, true)) {
             rtspStreamer = rs
         } else {
             Log.w(TAG, "RTSP start failed; watchdog will retry in 30 s")
+            rtspHeldMic = false
+            soundMonitor?.start()
         }
     }
 
@@ -734,9 +744,13 @@ class BridgeService : Service(), MqttCallbackExtended {
 
     private fun stopRtsp() {
         rtspStreamer?.stop(); rtspStreamer = null
+        if (rtspHeldMic) {
+            rtspHeldMic = false
+            soundMonitor?.start()
+        }
     }
 
-    // ── Display settings ──────────────────────────────────────────────────────
+    // ── Display settings ──────────────────────────────────────────────────
 
     private fun applyDisplaySettingsInternal() {
         if (prefs.screenTimeoutEnabled) scheduleScreenTimeout()
@@ -755,7 +769,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         timeoutHandler.postDelayed(timeoutRunnable, prefs.screenTimeoutMinutes * 60_000L)
     }
 
-    // ── Orientation (auto-rotates RTSP stream) ────────────────────────────────
+    // ── Orientation (auto-rotates RTSP stream) ──────────────────────────────────
 
     private fun startOrientationListener() {
         val listener = object : OrientationEventListener(this) {
@@ -810,7 +824,7 @@ class BridgeService : Service(), MqttCallbackExtended {
         }
     }
 
-    // ── Notification ──────────────────────────────────────────────────────────
+    // ── Notification ────────────────────────────────────────────────────────
 
     private fun createNotificationChannel() {
         val nm = getSystemService(NotificationManager::class.java)
