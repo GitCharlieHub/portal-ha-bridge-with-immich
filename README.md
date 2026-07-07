@@ -1,6 +1,6 @@
 # Portal HA Bridge
 
-Turn a **Meta Portal** into a fully-fledged **Home Assistant** device — screen control, camera streaming, motion & presence detection, ambient sensors, sound level, and more — all exposed automatically over **MQTT auto-discovery**. It also turns your Portals into a **push-to-talk intercom** for each other.
+Turn a **Meta Portal** into a fully-fledged **Home Assistant** device — screen control, camera streaming, motion & presence detection, ambient sensors, sound level, and more — all exposed automatically over **MQTT auto-discovery**. It also turns your Portals into a **push-to-talk intercom** for each other, makes them show up in your phone's **YouTube cast menu** like a smart TV ([Cast YouTube](#cast-youtube-from-your-phone)), and can put **real Amazon Alexa back on the Portal — including Android 10 models** ([Alexa on your Portal](#alexa-on-your-portal)).
 
 It also plugs into a hands-free **voice assistant** ([portal-assistant / "Jarvis"](https://github.com/rudysev/portal-assistant)) so you can control the Portal *and your entire Home Assistant* by voice — see [Voice assistant](#voice-assistant-control-by-voice).
 
@@ -154,7 +154,7 @@ Talk between Portals on your network — hold a button, speak, and it plays out 
 
 **Receive-only Portals.** A Portal can *send* only if a sideloaded app can get real-time microphone audio. On **Portal+** models, Meta's own always-on far-field mic / "Hey Alexa" detector can hold the microphone and throttle third-party capture, so an affected Portal is **receive-only** — it hears announcements but can't send them. The app measures this automatically at startup and shows a note in **Settings → Intercom**; receive-only Portals simply disable their send controls.
 
-> **Reclaim two-way on a 1st-gen Portal+:** run the provisioner with `--free-mic` (`-FreeAlohaMic`). It disables Meta's "Hey Alexa" wake detector (`com.millennium`), which frees the mic so the Portal can transmit too — without touching face-presence or Smart-Camera framing. Reversible with `--restore-mic`.
+> **Reclaim two-way on a Portal+:** run the provisioner with `--free-mic` (`-FreeAlohaMic`) — or simply provision Alexa (`-Alexa`), which does it automatically (the bridge's own wake word replaces Meta's detector). Either way it disables `com.millennium`, freeing the mic for transmit **without touching face-presence or Smart-Camera framing** — two-way confirmed working on a 1st-gen Portal+. Reversible with `--restore-mic`.
 
 > Uses `RECORD_AUDIO` for the mic and (for the floating buttons) `SYSTEM_ALERT_WINDOW` — both already granted by the provisioner.
 
@@ -260,7 +260,7 @@ Plus an on-device idle timer (**Screen Timeout** / **…Minutes**) that sleeps t
 - **Camera aspect ratio** differs by Portal+ generation — `aloha` streams square (1:1, no config), `cipher` streams 480×640 and needs the one-line 4:3 SAR filter in the HA card. See [Portal+ camera aspect ratio](#portal-camera-aspect-ratio).
 - **Camera orientation**: both Portal+ models have a **fixed camera** (it doesn't pivot with the screen), so accelerometer auto-rotate is disabled for them and the stream uses a fixed rotation — upright out of the box (`aloha` rot 0, `cipher` rot 90), adjustable with the in-app **Rotate** button. Auto-rotate still applies to non-Portal+ models.
 - **Portal+ 2nd gen (`cipher`)**: its accelerometer is mounted on the **moving screen arm**, which heavily dampens taps — so the tap threshold is auto-scaled, the gesture is relabelled **"Tilt"**, and its dominant (Z) axis reports **up/down** instead of front/back. All automatic — no config.
-- **Intercom**: a **Portal+** held by Meta's always-on mic is **receive-only**; other Portals send and receive. Detected automatically. A 1st-gen Portal+ can be made two-way with the provisioner's `--free-mic` flag — see [Intercom](#intercom-portal-to-portal-announce).
+- **Intercom**: **every model can be two-way.** Out of the box a **Portal+** has Meta's "Hey Alexa" detector holding the far-field mic, which makes it receive-only — the provisioner frees it (`--free-mic`), and **provisioning Alexa (`-Alexa`) frees it automatically** (the bridge supplies its own wake word instead). Capability is measured automatically at startup either way — see [Intercom](#intercom-portal-to-portal-announce).
 
 ---
 
