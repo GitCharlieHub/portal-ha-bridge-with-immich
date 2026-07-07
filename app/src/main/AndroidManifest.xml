@@ -10,6 +10,13 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <!--
+        YouTube cast receiver (DIAL): receive SSDP multicast discovery from the
+        phone's YouTube app. Normal permissions, granted at install.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!--
         Granted at setup time via ADB:
             adb shell pm grant com.aeonos.portalha android.permission.WRITE_SECURE_SETTINGS
         Used to auto-enable our own AccessibilityService so sleep works without
@@ -87,6 +94,20 @@
         <activity
             android:name=".MainActivity"
             android:exported="true" />
+
+        <!--
+            YouTube cast receiver screen (receiver-only WebView with the TV web
+            client). fullSensor: follows how the Portal is physically stood
+            (landscape or portrait); configChanges keeps the WebView alive
+            across rotations instead of reloading the session.
+            singleTask so a second cast reuses the instance via onNewIntent.
+        -->
+        <activity
+            android:name=".TvAppActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="fullSensor"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <activity
             android:name=".CameraSettingsActivity"

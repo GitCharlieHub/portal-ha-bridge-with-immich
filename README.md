@@ -160,6 +160,16 @@ Talk between Portals on your network — hold a button, speak, and it plays out 
 
 ---
 
+## Cast YouTube from your phone
+
+Every Portal running the app appears in the **YouTube app's cast menu** (Android and iPhone) on the same Wi-Fi, under its device name — just like a smart TV. Tap it and the Portal plays full-screen YouTube; **all control stays on the phone** (browse, play/pause, seek, queue). A sleeping Portal wakes when you cast. Disconnect on the phone — or long-press the Portal's screen — and it drops back to the Home Assistant dashboard.
+
+- **Zero configuration** — no pairing codes, no accounts on the Portal. Discovery is DIAL on your LAN; playback is YouTube's own TV web client in a WebView.
+- **Per-Portal names** — the cast entry uses the device name from Settings, so a fleet shows up as "Portal-Office", "Portal-Kitchen", …
+- **Limits** — YouTube only. DRM streaming apps (Netflix, Disney+ …) require Google-certified receivers and can't be supported by any sideloaded app.
+
+---
+
 ## Voice assistant (control by voice)
 
 Portal HA Bridge plugs into **[portal-assistant](https://github.com/rudysev/portal-assistant)** ("Jarvis", a hands-free Gemini-powered assistant) as a **tool provider**, so you can control this Portal *and your entire Home Assistant* by voice — without modifying the assistant. Say **"Hey Jarvis, …"** — the wake word is detected **on-device by this app** ([see below](#hands-free-wake-word)):
@@ -190,6 +200,32 @@ This app detects the wake phrase **on-device** (a small offline **Vosk** recogni
 
 ### Coexist with a voice assistant
 Prefer to run a *separate* always-on wake app (e.g. [portal-wake](https://github.com/rudysev/portal-wake)) instead of this app's built-in wake word? The Portal has a single microphone, so turn on **Coexist with voice assistant** (Settings → Display & Presence) and the bridge **releases the mic**: the **Sound Level** sensor and sound-based presence turn off, and the intercom captures on-demand only while you're announcing — so the other app can hear "Hey Jarvis" the rest of the time.
+
+---
+
+## Alexa on your Portal
+
+The bridge can put **real Amazon Alexa** back on a Portal — **including Android 10 models**, where Meta's stock "Hey Alexa" wake app is deaf (Android 10 silences microphone capture for background apps). The app's own on-device wake word does the listening and hands the mic to Alexa, bringing her forward invisibly behind a frozen frame of your dashboard for the length of the turn.
+
+**One-time setup (per Portal, over USB):**
+
+1. Run the provisioner with the Alexa flag:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\provision.ps1 -Alexa
+   ```
+   It downloads and SHA-verifies the stock Alexa client, installs it, grants its permissions, and opens the sign-in screen on the Portal.
+2. The Portal shows a code — enter it at **amazon.com/code** (any Amazon account region works, including .co.uk). The provisioner then relaunches the client until it connects (a few minutes; keep the cable in).
+3. On the Portal: enable **Alexa support** in **Settings → Display & Presence**. The wake phrase is editable — the default bare **"alexa"** is the most reliable.
+
+That's the only step that ever needs a cable: it grants permissions to Amazon's app, which no on-device app can do for another package. Everything after — new Alexa features, fixes — arrives with normal app updates.
+
+**Using it:** say **"alexa"**, wait for the **cyan bar / beep**, then speak. Long answers play to the end ("tell me a story" isn't cut off), interactive skills can keep asking you questions, and saying **"alexa"** while she's talking interrupts her. **"alexa stop"** in one breath is understood directly by the bridge: it pauses playing music instantly (no cloud round-trip) and cuts her off mid-story. The very first request after an app restart may hit a cold start: you'll hear a beep as the bridge auto-retries — just repeat the command.
+
+**Notes:**
+- **App updates never provision Alexa** — the one-time USB step above is always required first. On unprovisioned Portals the app shows a one-time notice after updating, and the Alexa toggle points you back here; everything else works without it.
+- **Android 9 (Portal+ 1st-gen):** no screen takeover is needed — Alexa pops her own story/music card over the dashboard and it stays up while audio plays; the Portal returns to the dashboard when the interaction ends.
+- The wake word has no echo cancellation, so audio that itself contains "alexa" can trigger her.
+- Alexa support and the Jarvis wake word run side by side — one mic, two assistants, each on its own phrase.
 
 ---
 

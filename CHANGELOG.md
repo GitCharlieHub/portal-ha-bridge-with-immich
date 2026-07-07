@@ -4,6 +4,73 @@ All notable changes to Portal HA Bridge. Versions are the app `versionName`;
 the in-app updater (Settings → *Check for Updates*) and the provisioner both pull
 the latest GitHub release.
 
+## v1.17.0 — Alexa on your Portal + YouTube casting
+
+**Added**
+- **Alexa on your Portal — including Android 10.** With the stock Alexa client
+  provisioned (one-time `provision.ps1 -Alexa` over USB — see the README), the
+  app's own on-device wake word hands the mic to **real Amazon Alexa**. This
+  works on **Android 10 Portals**, where the stock "Hey Alexa" wake app is deaf
+  (Android silences background mic capture; the bridge brings Alexa forward
+  invisibly behind a frozen-frame cover for the turn). Enable **Alexa support**
+  in Settings → Display & Presence — the phrase is editable (default "alexa")
+  and it runs alongside the Jarvis wake word: two assistants, one mic.
+  - **Long answers play to the end.** The mic hand-back is playback-aware:
+    "alexa, tell me a story" holds the conversation open while she's audibly
+    speaking and gives the mic back a few seconds after she stops — so stories
+    aren't cut off and interactive skills can keep asking you questions.
+  - **Barge-in.** Say the wake word while Alexa is talking to interrupt her —
+    "alexa … stop" works mid-story, just like a real Echo.
+  - **Multi-turn dialogs** ("alexa, set a reminder" → "what's the reminder?")
+    keep the mic with Alexa across follow-ups.
+  - **Cyan listening bar** as the "speak now" cue: say the wake word, wait for
+    the bar/beep, then give the command.
+  - **"alexa stop", handled properly.** Said in one breath, the words are gone
+    before Alexa's mic can open — so the bridge recognizes the phrase itself and
+    acts locally: playing music is paused instantly (no cloud round-trip, no
+    "something went wrong"), and mid-story it cuts her off on the spot.
+  - **Cold-start auto-retry.** The first request after an app restart used to
+    fail with "something went wrong" (Alexa's first mic grab loses a race while
+    its UI cold-starts) — the bridge now detects the instant abort and silently
+    retries; worst case you hear a beep and repeat the command once.
+  - **Portal+ 1st-gen (Android 9):** Alexa shows her own story/music card there
+    (no screen takeover needed), and it stays up while audio plays. When the
+    interaction ends, the Portal now returns straight to the Home Assistant
+    dashboard instead of stranding on the Meta home screen.
+  - **One-time USB provisioning required** — an app update can't install
+    Amazon's Alexa client (see the README, *Alexa on your Portal*). The app
+    shows a one-time notice after updating, and the Alexa toggle explains the
+    step on unprovisioned Portals. Until provisioned, everything else works as
+    before.
+- **Seamless assistant handoff.** The Android-10 wake takeover (Jarvis and
+  Alexa) is now invisible: the screen is covered with a pixel-perfect frozen
+  frame of the dashboard before the assistant comes forward, the dashboard
+  returns the moment the assistant has the mic, conversations are no longer cut
+  short between turns, and **camera feeds no longer reload after a wake** (the
+  dashboard WebView stays "visible" to Home Assistant throughout).
+- **Provisioner: one-command Alexa setup + auto-update.** `provision.ps1 -Alexa`
+  downloads and verifies the Alexa client, installs and grants it, opens the
+  code sign-in (enter it at amazon.com/code — UK accounts work), and relaunches
+  it until connected. The provisioner also now **auto-updates the app** whenever
+  your local build is newer than what's installed.
+- **YouTube casting.** The Portal now shows up in the **cast menu of the YouTube
+  app** on any phone on your Wi-Fi (Android and iPhone) under its device name —
+  exactly like a smart TV. Tap it and the Portal switches from the dashboard to
+  a full-screen YouTube player; **everything is controlled from the phone**
+  (browse, play/pause, seek, queue — the Portal is just the screen). A sleeping
+  Portal **wakes when you cast**. Disconnecting on the phone (or a long-press on
+  the Portal's screen) returns to the Home Assistant dashboard.
+  No pairing codes, no cloud linking, no configuration: discovery is DIAL over
+  the LAN (the pre-Chromecast smart-TV mechanism the YouTube app still speaks),
+  playback is YouTube's own TV web client. DRM apps (Netflix & co.) can't work
+  this way — they require certified receivers.
+
+**Fixed**
+- **Alexa was inaudible with the bridge running.** The keep-alive's continuous
+  silent audio track occupied the Portal's audio output path and starved Alexa's
+  speech (playback "succeeded" but nothing was heard). The silent track is gone;
+  the media-session keep-alive remains.
+
 ## v1.16.0 — Voice announce, glowing orb, and experimental hands-free 2-way
 
 **Added**

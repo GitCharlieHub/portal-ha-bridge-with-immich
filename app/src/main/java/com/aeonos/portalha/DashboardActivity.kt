@@ -18,6 +18,33 @@ import android.widget.Toast
 
 class DashboardActivity : AppCompatActivity() {
 
+    companion object {
+        @Volatile private var instance: DashboardActivity? = null
+
+        // Snapshot the live dashboard as a bitmap, so the wake handoff can freeze it
+        // on-screen (an overlay) while the assistant is invisibly brought forward to
+        // grab the mic — the switch to the assistant is never seen. Uses PixelCopy:
+        // it reads back the composited GPU frame, so the copy is pixel-identical to
+        // the screen. (View.draw() software rendering distorted CSS-transformed
+        // WebView elements — e.g. the Immich kiosk clock came out squashed.)
+        // Async; calls back on the main thread with null if capture isn't possible.
+        fun snapshot(cb: (android.graphics.Bitmap?) -> Unit) {
+            val act = instance
+            if (act == null || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O) {
+                cb(null); return
+            }
+            runCatching {
+                val v = act.findViewById<View>(android.R.id.content)
+                if (v == null || v.width <= 0 || v.height <= 0) { cb(null); return }
+                val bmp = android.graphics.Bitmap.createBitmap(
+                    v.width, v.height, android.graphics.Bitmap.Config.ARGB_8888)
+                android.view.PixelCopy.request(act.window, bmp, { result ->
+                    cb(if (result == android.view.PixelCopy.SUCCESS) bmp else null)
+                }, android.os.Handler(android.os.Looper.getMainLooper()))
+            }.onFailure { cb(null) }
+        }
+    }
+
     private lateinit var webView: WebView
     private lateinit var drawer: DrawerLayout
     private lateinit var prefs: Prefs
@@ -47,6 +74,12 @@ class DashboardActivity : AppCompatActivity() {
         drawer = findViewById(R.id.drawer_layout)
         webView = findViewById(R.id.web_view)
 
+        // Kiosk: never draw scrollbars — they flash down the right edge whenever the
+        // WebView is re-laid-out (e.g. returning from the assistant handoff).
+        webView.isVerticalScrollBarEnabled = false
+        webView.isHorizontalScrollBarEnabled = false
+        webView.overScrollMode = View.OVER_SCROLL_NEVER
+
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -75,6 +108,12 @@ class DashboardActivity : AppCompatActivity() {
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                view.evaluateJavascript(alwaysVisibleJs(), null)
+            }
+            override fun onPageFinished(view: WebView, url: String) {
+                view.evaluateJavascript(alwaysVisibleJs(), null)
+            }
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
                 handler.proceed() // Accept self-signed certs for local HA
             }
@@ -120,6 +159,7 @@ class DashboardActivity : AppCompatActivity() {
 
         setupIntercom()
 
+        instance = this
         loadDashboard()
 
         // First run (nothing configured yet): drop straight into Settings rather
@@ -160,6 +200,7 @@ class DashboardActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        instance = this
         enableImmersive()
         // Floating talk buttons are shown only while the dashboard is in front.
         BridgeService.setDashboardForeground(true)
@@ -265,6 +306,32 @@ class DashboardActivity : AppCompatActivity() {
         else -> "http://$url"
     }
 
+    /**
+     * Kiosk lie: make the page believe it is ALWAYS visible. When the assistant
+     * takes the foreground during a wake handoff, Android tells the page it's
+     * hidden and HA's frontend tears down camera streams (then visibly reloads
+     * them on return). Spoofing document.hidden/visibilityState and swallowing
+     * the visibility events (capture phase, registered before HA's bundle loads)
+     * keeps the streams connected across the handoff — no reload.
+     */
+    private fun alwaysVisibleJs(): String = """
+        (function () {
+          if (window.__phaAlwaysVisible) return; window.__phaAlwaysVisible = true;
+          try {
+            Object.defineProperty(Document.prototype, 'hidden',
+              { get: function () { return false; }, configurable: true });
+            Object.defineProperty(Document.prototype, 'visibilityState',
+              { get: function () { return 'visible'; }, configurable: true });
+          } catch (e) {}
+          ['visibilitychange', 'webkitvisibilitychange', 'pagehide', 'freeze']
+            .forEach(function (t) {
+              var swallow = function (e) { e.stopImmediatePropagation(); };
+              window.addEventListener(t, swallow, true);
+              document.addEventListener(t, swallow, true);
+            });
+        })();
+    """.trimIndent()
+
     private fun showPlaceholder(message: String) {
         // Must use loadDataWithBaseURL, not loadData: loadData treats the payload
         // like a URL and chokes on the '#' in hex colors, rendering a blank page.
@@ -285,5 +352,10 @@ class DashboardActivity : AppCompatActivity() {
             webView.canGoBack() -> webView.goBack()
             else -> super.onBackPressed()
         }
+    }
+
+    override fun onDestroy() {
+        if (instance === this) instance = null
+        super.onDestroy()
     }
 }

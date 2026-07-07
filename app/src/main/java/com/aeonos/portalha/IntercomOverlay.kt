@@ -67,6 +67,13 @@ class IntercomOverlay(
     private var view: TextView? = null
     private var params: WindowManager.LayoutParams? = null
 
+    // Staged-refloat state (see prepareRefloat/completeRefloat): the outgoing window
+    // pending removal, whether the incoming one should stay hidden until revealed, and
+    // whether a default-slot button has been right-aligned yet.
+    private var pendingOld: TextView? = null
+    @Volatile private var stageHidden = false
+    @Volatile private var defaultPlaced = false
+
     private val liveColor = Color.parseColor("#E53935")
 
     @Volatile private var moveMode = false
@@ -166,6 +173,12 @@ class IntercomOverlay(
                 view = btn
                 params = lp
                 applyVisual()
+                defaultPlaced = initialX >= 0
+                // Default slot: the real x needs the measured width, so the button is
+                // added at a placeholder position — keep it INVISIBLE until it's been
+                // right-aligned, or it flashes at the top-left for a frame each show.
+                // A staged refloat (stageHidden) keeps it hidden until completeRefloat.
+                if (initialX < 0 || stageHidden) btn.visibility = android.view.View.INVISIBLE
                 wm.addView(btn, lp)
 
                 // Default slot: right-align once we know the measured width.
@@ -173,6 +186,8 @@ class IntercomOverlay(
                     val p = params ?: return@post
                     p.x = (context.resources.displayMetrics.widthPixels - btn.width - dp(16)).coerceAtLeast(0)
                     runCatching { wm.updateViewLayout(btn, p) }
+                    defaultPlaced = true
+                    if (!stageHidden) btn.visibility = android.view.View.VISIBLE
                 }
                 Log.i(TAG, "intercom overlay '$label' shown")
             }.onFailure { Log.w(TAG, "intercom overlay show failed: ${it.message}") }
@@ -210,9 +225,47 @@ class IntercomOverlay(
     fun refresh() = main.post { applyVisual() }
 
     fun hide() {
+        // Drop a staged outgoing window too, or an interrupted refloat would leak it.
+        pendingOld?.let { o -> pendingOld = null; main.post { runCatching { wm.removeView(o) } } }
+        stageHidden = false
         val v = view ?: return
         view = null; params = null
         main.removeCallbacks(startTalkRunnable)
         main.post { runCatching { wm.removeView(v) } }
+    }
+
+    /**
+     * Staged refloat, step 1: build a REPLACEMENT window above any newer overlay window
+     * (the wake-handoff cover — later-added windows draw on top), kept INVISIBLE at its
+     * final position; [onReady] fires once it's attached, measured, and (for default-slot
+     * buttons) right-aligned. The old window stays visible until completeRefloat(), so
+     * callers can swap cover + button in a single frame — no blink, no alpha stacking.
+     */
+    fun prepareRefloat(onReady: Runnable) {
+        val old = view
+        if (old == null || pendingOld != null) { onReady.run(); return }
+        pendingOld = old
+        view = null; params = null
+        stageHidden = true
+        main.removeCallbacks(startTalkRunnable)
+        show()
+        var tries = 0
+        lateinit var waitReady: Runnable
+        waitReady = Runnable {
+            val nv = view
+            when {
+                nv != null && nv.width > 0 && defaultPlaced -> onReady.run()
+                ++tries > 30 -> onReady.run()   // ~0.5s cap — never stall the handoff
+                else -> main.postDelayed(waitReady, 16)
+            }
+        }
+        main.post(waitReady)
+    }
+
+    /** Staged refloat, step 2: reveal the replacement and drop the outgoing window. */
+    fun completeRefloat() {
+        stageHidden = false
+        view?.visibility = android.view.View.VISIBLE
+        pendingOld?.let { o -> pendingOld = null; main.post { runCatching { wm.removeView(o) } } }
     }
 }

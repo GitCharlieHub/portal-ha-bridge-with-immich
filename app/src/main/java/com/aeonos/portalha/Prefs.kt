@@ -171,6 +171,26 @@ class Prefs(private val context: Context) {
             sp.edit().putString("wake_phrase", phrase).apply()
         }
 
+    // Alexa support: an INDEPENDENT wake word that hands off to the revived Amazon Alexa
+    // (falcon) client, alongside (not instead of) the Jarvis wake word. When on, the
+    // detector listens for BOTH phrases and routes each to its assistant.
+    var alexaWakeEnabled: Boolean
+        get() = sp.getBoolean("alexa_wake_enabled", false)
+        set(v) = sp.edit().putBoolean("alexa_wake_enabled", v).apply()
+
+    // One-time "Alexa needs USB provisioning" notice, shown on the first settings visit
+    // after landing on an Alexa-capable build (and only when falcon isn't installed —
+    // an app update can't provision Amazon's client, that step is USB-only).
+    var alexaProvisionNoticeShown: Boolean
+        get() = sp.getBoolean("alexa_provision_notice_shown", false)
+        set(v) = sp.edit().putBoolean("alexa_provision_notice_shown", v).apply()
+
+    // Alexa's wake word. Bare (no forced "hey") — that's how Alexa's own wake works; a
+    // single word is inherently more false-prone, so "alexa" is the sensible default.
+    var alexaWakePhrase: String
+        get() = sp.getString("alexa_wake_phrase", "alexa") ?: "alexa"
+        set(v) = sp.edit().putString("alexa_wake_phrase", v.trim().lowercase().ifEmpty { "alexa" }).apply()
+
     // Hands-free intercom announce: "<wake phrase> announce" → beep → your live voice
     // broadcasts to every Portal. Only functions while the wake word is enabled.
     var voiceAnnounceEnabled: Boolean
@@ -288,6 +308,15 @@ class Prefs(private val context: Context) {
     var intercomTransparentBg: Boolean
         get() = sp.getBoolean("intercom_transparent_bg", false)
         set(v) = sp.edit().putBoolean("intercom_transparent_bg", v).apply()
+
+    // How the ~400ms wake handoff to the assistant is masked on screen:
+    //  "whoosh"   — an orange curtain sweeps down over everything, then off (an
+    //               intentional animation; never glitches over animated content).
+    //  "snapshot" — a frozen crossfade of the dashboard (seamless on a STATIC
+    //               dashboard; slight jump if the content was animating).
+    var wakeCoverStyle: String
+        get() = sp.getString("wake_cover_style", "snapshot") ?: "snapshot"
+        set(v) = sp.edit().putString("wake_cover_style", v).apply()
 
     val brokerUri: String get() = "tcp://$brokerHost:$brokerPort"
 }

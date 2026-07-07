@@ -21,6 +21,7 @@
       .\provision.ps1 -SetLauncher    # also set immortal as the default home launcher
       .\provision.ps1 -FreeAlohaMic   # free the mic for 2-way intercom (disables Meta's "Hey Alexa")
       .\provision.ps1 -RestoreAlohaMic # undo -FreeAlohaMic (re-enable "Hey Alexa")
+      .\provision.ps1 -Alexa          # also revive Amazon Alexa (falcon) + link via amazon.com/code (A9 & A10)
 
   The APK is resolved from, in order: -Apk; the build output
   (app\build\outputs\apk\release\app-release.apk); a portal-ha-bridge.apk /
@@ -33,7 +34,8 @@ param(
     [switch]$Install,
     [switch]$SetLauncher,
     [switch]$FreeAlohaMic,
-    [switch]$RestoreAlohaMic
+    [switch]$RestoreAlohaMic,
+    [switch]$Alexa
 )
 
 # NOTE: deliberately NOT "Stop". adb writes harmless first-run chatter to
@@ -76,6 +78,40 @@ $adb = Resolve-Adb
 $target = @(); if ($Serial) { $target = @("-s", $Serial) }
 function Adb { & $adb @target @args }
 
+# Find aapt/aapt2 candidates (to read an APK's versionCode) so we can auto-update an
+# already-installed app when the local build is newer. OPTIONAL - if none work we
+# just fall back to the classic "install only if missing" behaviour. Returns a LIST
+# (PATH + every build-tools version) because some build-tools aapt2 builds misbehave;
+# Get-ApkVersionCode tries each until one yields a version.
+function Resolve-Aapt {
+    $found = @()
+    foreach ($c in @("aapt2","aapt")) {
+        $cmd = Get-Command $c -ErrorAction SilentlyContinue
+        if ($cmd) { $found += $cmd.Source }
+    }
+    foreach ($root in @("$env:LOCALAPPDATA\Android\Sdk\build-tools", "$env:ANDROID_HOME\build-tools", "F:\android_sdk\build-tools")) {
+        if (-not (Test-Path $root)) { continue }
+        foreach ($d in (Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
+            foreach ($n in @("aapt2.exe","aapt.exe")) {
+                $p = Join-Path $d.FullName $n
+                if (Test-Path $p) { $found += $p }
+            }
+        }
+    }
+    return $found
+}
+$aaptList = Resolve-Aapt
+
+# versionCode from an APK - tries each aapt until one returns a number, or $null.
+function Get-ApkVersionCode($apkPath) {
+    if (-not $apkPath -or -not (Test-Path $apkPath)) { return $null }
+    foreach ($aapt in $aaptList) {
+        $m = (& $aapt dump badging $apkPath 2>$null | Select-String "versionCode='(\d+)'")
+        if ($m) { return [int]$m.Matches[0].Groups[1].Value }
+    }
+    return $null
+}
+
 Write-Host "Provisioning $pkg" -ForegroundColor Cyan
 & $adb @target get-state 2>$null | Out-Null   # fail fast if no/ambiguous device
 if ($LASTEXITCODE -ne 0) {
@@ -84,36 +120,55 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # Install the app if it isn't already on the device (or if -Install / -Apk
-# forces it). Everything after this needs the package to exist.
+# forces it, or the local build is NEWER than what's installed). Everything after
+# this needs the package to exist.
 $installed = (Adb shell "pm list packages $pkg" | ForEach-Object { $_.Trim() }) -contains "package:$pkg"
 
-if (-not $installed -or $Install -or $Apk) {
-    # Resolve the APK: explicit -Apk, then the build output, then an APK dropped
-    # next to this script, else download the latest release.
-    $candidates = @()
-    if ($Apk) { $candidates += $Apk }
-    $candidates += (Join-Path $PSScriptRoot "app\build\outputs\apk\release\app-release.apk")
-    $candidates += (Join-Path $PSScriptRoot "portal-ha-bridge.apk")
-    $candidates += (Join-Path $PSScriptRoot "app-release.apk")
-    $apk = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $apk) {
+# Resolve a LOCAL apk up front (explicit -Apk, build output, or one dropped next to
+# the script) - used both for install-if-missing and the newer-build auto-update.
+$candidates = @()
+if ($Apk) { $candidates += $Apk }
+$candidates += (Join-Path $PSScriptRoot "app\build\outputs\apk\release\app-release.apk")
+$candidates += (Join-Path $PSScriptRoot "portal-ha-bridge.apk")
+$candidates += (Join-Path $PSScriptRoot "app-release.apk")
+# NOTE: NOT named $apk - PowerShell variables are case-insensitive, so $apk would
+# clobber the -Apk PARAM ($Apk) and make the install-decision always fire.
+$localApk = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+# Auto-update: if installed AND a local build is newer, refresh it (so re-running
+# after a rebuild actually pushes the new version - the old behaviour silently kept
+# a stale build). Needs aapt; without it we skip the comparison (install-if-missing).
+$newer = $false
+if ($installed -and $localApk -and -not $Install -and -not $Apk) {
+    $localVc = Get-ApkVersionCode $localApk
+    $instVc = $null
+    $ivm = (Adb shell "dumpsys package $pkg" | Select-String "versionCode=(\d+)")
+    if ($ivm) { $instVc = [int]$ivm.Matches[0].Groups[1].Value }
+    if ($localVc -and $instVc -and ($localVc -gt $instVc)) {
+        $newer = $true
+        Write-Host "Local build is newer (versionCode $localVc > installed $instVc) - updating." -ForegroundColor Cyan
+    }
+}
+
+if (-not $installed -or $Install -or $Apk -or $newer) {
+    if (-not $localApk) {
         # Nothing local - download the latest release APK so a single file
         # (this script) + a single command is all that's needed.
-        $apk = Join-Path $PSScriptRoot "portal-ha-bridge.apk"
+        $localApk = Join-Path $PSScriptRoot "portal-ha-bridge.apk"
         Write-Host "No local APK found - downloading the latest release APK..." -ForegroundColor Yellow
         $rel = "https://github.com/RoadRunner-1024/portal-ha-bridge/releases/latest/download/portal-ha-bridge.apk"
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            Invoke-WebRequest -Uri $rel -OutFile $apk -UseBasicParsing
-            Write-Host "  downloaded $apk" -ForegroundColor Green
+            Invoke-WebRequest -Uri $rel -OutFile $localApk -UseBasicParsing
+            Write-Host "  downloaded $localApk" -ForegroundColor Green
         } catch {
             Write-Host "Could not download the release APK: $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "Pass -Apk <path-to-apk> or build from source (gradle assembleRelease) instead." -ForegroundColor Red
             exit 1
         }
     }
-    Write-Host "Installing $apk ..." -ForegroundColor Cyan
-    Adb install -r -t $apk
+    Write-Host "Installing $localApk ..." -ForegroundColor Cyan
+    Adb install -r -t $localApk
 
     # Confirm it landed before granting - otherwise pm grant / appops fail with
     # the confusing "No UID for $pkg in user 0" errors.
@@ -123,7 +178,9 @@ if (-not $installed -or $Install -or $Apk) {
         exit 1
     }
 } else {
-    Write-Host "App already installed (use -Install to force an update)." -ForegroundColor DarkGray
+    $note = if (-not $aaptList) { "App already installed (aapt not found - couldn't check for a newer build; use -Install to force)." }
+            else { "App already installed and up to date." }
+    Write-Host $note -ForegroundColor DarkGray
 }
 
 Write-Host "Granting permissions..." -ForegroundColor Cyan
@@ -215,6 +272,81 @@ if ($FreeAlohaMic) {
     $stillEnabled = (Adb shell "pm list packages -e $millennium") -match [regex]::Escape($millennium)
     $micFreed = -not $stillEnabled
     Write-Host ("  {0,-22} {1}" -f "TwoWayMic", $(if ($micFreed) {"OK (mic freed)"} else {"STILL THROTTLED"})) -ForegroundColor $(if ($micFreed) {"Green"} else {"Red"})
+}
+
+# ── Amazon Alexa (falcon) - optional (-Alexa) ────────────────────────────────
+# Revives the stock Meta Alexa client and links it via Code-Based Linking (which
+# stores its own token, bypassing the Portal's broken keystore). Works on A9 AND
+# A10 - our own foreground wake-word detector drives it (millennium can't: on A10
+# a background recorder is mic-silenced). After this, enable "Alexa support" in the
+# app's Display & Presence settings. Reverse: adb uninstall com.amazon.alexa.multimodal.falcon
+if ($Alexa) {
+    Write-Host "`nProvisioning Amazon Alexa (falcon)..." -ForegroundColor Cyan
+    $falcon    = "com.amazon.alexa.multimodal.falcon"
+    $falconUrl = "https://github.com/starbrightlab/hey-dist/releases/download/v0.1.0/falcon.apk"
+    $falconSha = "76133f807e492e46aaf58e6ae503e623a93af840eaa3eccfb8630f1ecab3268d"
+    $falconApk = Join-Path $PSScriptRoot "falcon.apk"
+
+    # Download + verify once, cached next to the script (skip the 115 MB re-download).
+    $haveFalcon = (Test-Path $falconApk) -and
+        ((Get-FileHash $falconApk -Algorithm SHA256).Hash.ToLower() -eq $falconSha)
+    if (-not $haveFalcon) {
+        Write-Host "  downloading falcon (~115 MB)..." -ForegroundColor Yellow
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -Uri $falconUrl -OutFile $falconApk -UseBasicParsing
+        } catch { Write-Host "  falcon download failed: $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
+        if ((Get-FileHash $falconApk -Algorithm SHA256).Hash.ToLower() -ne $falconSha) {
+            Write-Host "  falcon checksum mismatch - delete falcon.apk and retry" -ForegroundColor Red; exit 1
+        }
+    }
+    Write-Host "  falcon.apk verified" -ForegroundColor Green
+
+    # dee.app (the dead standard Alexa app) shares a permission with falcon and blocks its install.
+    if ((Adb shell "pm list packages com.amazon.dee.app") -match "com.amazon.dee.app") {
+        Adb uninstall com.amazon.dee.app | Out-Null
+        Write-Host "  removed conflicting com.amazon.dee.app" -ForegroundColor Green
+    }
+    Adb install -r $falconApk | Out-Null
+    Write-Host "  falcon installed" -ForegroundColor Green
+
+    # Grants + settings so falcon can run and capture.
+    foreach ($p in @(
+        "android.permission.READ_PHONE_STATE",
+        "android.permission.INTERACT_ACROSS_USERS",
+        "android.permission.RECORD_AUDIO")) { Adb shell "pm grant $falcon $p" 2>$null | Out-Null }
+    Adb shell "appops set $falcon SYSTEM_ALERT_WINDOW allow" | Out-Null
+    Adb shell "settings put secure user_setup_complete 1" | Out-Null
+    Adb shell "settings put global hidden_api_policy 1" | Out-Null
+    Write-Host "  granted falcon perms" -ForegroundColor Green
+
+    # We drive Alexa with our OWN wake word, so millennium isn't needed - disable it if present.
+    if ((Adb shell "pm list packages $millennium") -match [regex]::Escape($millennium)) {
+        Adb shell "pm disable-user --user 0 $millennium" | Out-Null
+    }
+
+    # Code-Based Linking: launch falcon so the sign-in code shows on the Portal.
+    Adb shell "am start -n $falcon/com.amazon.alexa.multimodal.LaunchActivity" | Out-Null
+    Write-Host "`n  >>> SIGN IN: a code is on the Portal screen. Go to https://amazon.com/code and enter it. <<<" -ForegroundColor Yellow
+    Write-Host "      Do it now - connecting can take a few minutes (esp. on Android 10)." -ForegroundColor DarkGray
+
+    # Kick loop: relaunch falcon until its Speech Interaction Manager reaches ReadyState.
+    $ready = $false
+    for ($i = 0; $i -lt 18; $i++) {
+        Start-Sleep -Seconds 30
+        if (((Adb logcat -t 300 -s SPCH-SIM_SimStateMachine:I) -join "`n") -match "in ReadyState") { $ready = $true; break }
+        Adb shell "am force-stop $falcon" | Out-Null
+        Adb shell "am start -n $falcon/com.amazon.alexa.multimodal.LaunchActivity" | Out-Null
+        Write-Host ("  ...still connecting ({0}s)" -f (($i + 1) * 30)) -ForegroundColor DarkGray
+    }
+    if ($ready) {
+        Write-Host "  [ok] Alexa connected (ReadyState)" -ForegroundColor Green
+        Write-Host "      Enable 'Alexa support' in the app (Display & Presence), then say your Alexa wake word." -ForegroundColor Cyan
+    } else {
+        Write-Host "  Alexa not connected within the window. Finish the amazon.com/code sign-in - it connects on its own; re-run -Alexa to re-check." -ForegroundColor Yellow
+    }
+    # Return the Portal to our dashboard (falcon was left foreground for sign-in).
+    Adb shell "am start -n $pkg/.DashboardActivity" | Out-Null
 }
 
 Write-Host "`nDone." -ForegroundColor Cyan

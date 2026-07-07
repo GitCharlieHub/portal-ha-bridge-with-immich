@@ -36,6 +36,13 @@ class WakeWordDetector(
     // instead of the assistant handoff. Deliberately gated harder than the plain wake
     // (exact phrase, higher floors) — a false announcement interrupts the whole house.
     private val onAnnounce: () -> Unit = {},
+    // Fired when the SEPARATE Alexa wake word ([alexaPhrase]) is matched — routes to the
+    // revived Amazon Alexa (falcon) client. Independent of [onWake]/Jarvis.
+    private val onAlexaWake: () -> Unit = {},
+    // "<alexa phrase> stop" spoken as one breath. A LISTEN round-trip can't help here —
+    // by the time her mic opens the words are gone (she then listens to the room for ~8s
+    // and errors out, killing the music session with it). The service acts on it locally.
+    private val onAlexaStop: () -> Unit = {},
 ) {
     companion object {
         private const val TAG = "PortalHA"
@@ -56,6 +63,10 @@ class WakeWordDetector(
         private const val CLEAN_PHRASE_MAX_WORDS = 3          // a real wake is a short, clean phrase
         private const val ANNOUNCE_WORD = "announce"          // "<phrase> announce" → voice announce
         private const val ANNOUNCE_MIN_CONF = 0.90            // every word must clear this for announce
+        private const val STOP_WORD = "stop"                  // "<alexa phrase> stop" → local stop
+        // Deliberately laxer than announce: a false "alexa stop" merely pauses playback,
+        // and it usually has to decode over loud story/music audio.
+        private const val STOP_MIN_CONF = 0.60
         private const val WARMUP_SILENCE_FRAMES = 25          // ~1 s of silence settles the decoder
         private val LEAD_ALIASES = mapOf("hey" to setOf("hey", "hay"))   // Vosk mishears "hey" as "hay"
     }
@@ -63,17 +74,22 @@ class WakeWordDetector(
     /** One recognized word + its per-word confidence (−1 when the model gave no score). */
     private data class RecWord(val word: String, val conf: Double)
 
+    // Jarvis wake phrase (empty = Jarvis route disabled). The recognizer is constrained to
+    // — and a match requires — the WHOLE phrase ("hey jarvis"): matching only the last word
+    // let ordinary speech false-trigger (a one-word grammar maps almost any utterance onto
+    // the single keyword, so the assistant's own reply kept re-firing the wake).
     @Volatile var phrase: String = "hey jarvis"
-    // The recognizer is constrained to — and a match requires — the WHOLE phrase
-    // ("hey jarvis"). Matching only the last word ("jarvis") let ordinary speech
-    // false-trigger: a one-word grammar maps almost any utterance onto that single
-    // keyword, so the assistant's own spoken reply kept re-firing the wake.
-    private val target get() = phrase.trim().lowercase().ifEmpty { "hey jarvis" }
+    // Alexa wake phrase (empty = Alexa route disabled) — a SECOND, independent wake word.
+    @Volatile var alexaPhrase: String = ""
+
+    private val jarvisTarget get() = phrase.trim().lowercase()
+    private val alexaTarget get() = alexaPhrase.trim().lowercase()
+
     // keyword = the salient last word ("jarvis"); lead = the word before it ("hey"). Precision
     // comes from requiring the lead in front of the keyword, not from the keyword alone.
-    private val words get() = target.split(' ').filter { it.isNotEmpty() }
-    private val keyword get() = words.lastOrNull() ?: "jarvis"
-    private val lead get() = if (words.size >= 2) words[words.size - 2] else null
+    private fun wordsOf(p: String) = p.split(' ').filter { it.isNotEmpty() }
+    private fun keywordOf(p: String) = wordsOf(p).lastOrNull() ?: ""
+    private fun leadOf(p: String) = wordsOf(p).let { if (it.size >= 2) it[it.size - 2] else null }
 
     private val running = AtomicBoolean(false)
     @Volatile private var ready = false
@@ -118,8 +134,14 @@ class WakeWordDetector(
         // non-matching speech (so look-alikes aren't forced onto the wake) AND is the
         // contamination signal the gate below rejects. setWords gives per-word confidence.
         val entries = LinkedHashSet<String>().apply {
-            add(target); add(keyword); lead?.let { add(it) }
-            add("$target $ANNOUNCE_WORD"); add(ANNOUNCE_WORD)   // bias the announce trigger too
+            if (jarvisTarget.isNotEmpty()) {
+                add(jarvisTarget); add(keywordOf(jarvisTarget)); leadOf(jarvisTarget)?.let { add(it) }
+                add("$jarvisTarget $ANNOUNCE_WORD"); add(ANNOUNCE_WORD)   // bias the announce trigger
+            }
+            if (alexaTarget.isNotEmpty()) {
+                add(alexaTarget); add(keywordOf(alexaTarget)); leadOf(alexaTarget)?.let { add(it) }
+                add("$alexaTarget $STOP_WORD"); add(STOP_WORD)   // bias the one-breath stop
+            }
             add(UNK_TOKEN)
         }
         val grammar = JSONArray(entries.toList()).toString()
@@ -132,7 +154,7 @@ class WakeWordDetector(
         runCatching { recognizer.setWords(true) }
         warmUp(recognizer)          // settle the decoder so the first "hey" isn't dropped
         ready = true
-        Log.i(TAG, "wake: recognizer ready (phrase='$target', keyword='$keyword', lead='$lead')")
+        Log.i(TAG, "wake: recognizer ready (jarvis='$jarvisTarget', alexa='$alexaTarget')")
         try {
             while (running.get()) {
                 val frame = queue.poll(200, TimeUnit.MILLISECONDS) ?: continue
@@ -145,12 +167,23 @@ class WakeWordDetector(
                 // fails the strict gate it's a near-miss, never a fallback assistant wake
                 // (the intent was clearly announce; waking Jarvis instead would be worse).
                 val hasAnnounce = rec.any { it.word == ANNOUNCE_WORD }
-                if (hasAnnounce && isAnnounce(rec)) {
+                val hasStop = rec.any { it.word == STOP_WORD }
+                val jw = jarvisTarget; val aw = alexaTarget
+                if (jw.isNotEmpty() && hasAnnounce && isAnnounce(rec, jw)) {
                     fire(recognizer, rec, "voice announce") { onAnnounce() }
-                } else if (!hasAnnounce && isWake(rec)) {
+                } else if (aw.isNotEmpty() && hasStop && !hasAnnounce &&
+                        isCompound(rec, aw, STOP_WORD, STOP_MIN_CONF)) {
+                    fire(recognizer, rec, "alexa stop") { onAlexaStop() }
+                } else if (aw.isNotEmpty() && !hasAnnounce && isWakeFor(rec, aw)) {
+                    // NB "[alexa] [stop]" that fails the compound gate still lands here as a
+                    // plain wake — in a held turn that's the barge-in, which cuts her speech
+                    // anyway (most of what "stop" wanted).
+                    fire(recognizer, rec, "alexa wake") { onAlexaWake() }
+                } else if (jw.isNotEmpty() && !hasAnnounce && isWakeFor(rec, jw)) {
                     fire(recognizer, rec, "wake") { onWake() }
-                } else if (rec.any { it.word == keyword || it.word == ANNOUNCE_WORD }) {
-                    // Keyword decoded but a gate rejected it — log the near-miss for tuning.
+                } else if (rec.any { w -> (jw.isNotEmpty() && w.word == keywordOf(jw)) ||
+                        (aw.isNotEmpty() && w.word == keywordOf(aw)) || w.word == ANNOUNCE_WORD }) {
+                    // A keyword decoded but a gate rejected it — log the near-miss for tuning.
                     Log.i(TAG, "wake: near-miss [${render(rec)}] (rejected)")
                 }
             }
@@ -197,28 +230,35 @@ class WakeWordDetector(
     // and EVERY word must clear ANNOUNCE_MIN_CONF (real close-mic decodes score ~1.00; every
     // live false positive we've caught had at least one weak word). Bias: a missed announce
     // costs a repeat; a false one interrupts the whole house.
-    private fun isAnnounce(rec: List<RecWord>): Boolean {
-        val expected = words + ANNOUNCE_WORD                       // e.g. [hey, jarvis, announce]
+    private fun isAnnounce(rec: List<RecWord>, phrase: String): Boolean =
+        isCompound(rec, phrase, ANNOUNCE_WORD, ANNOUNCE_MIN_CONF)
+
+    // Exact "<phrase> <suffix>" — nothing before/after (any [unk] fails by length) and every
+    // word over [minConf]. Shared by announce and the one-breath alexa stop.
+    private fun isCompound(rec: List<RecWord>, phrase: String, suffix: String, minConf: Double): Boolean {
+        val expected = wordsOf(phrase) + suffix                    // e.g. [hey, jarvis, announce]
         if (rec.size != expected.size) return false
         val leadIdx = expected.size - 3                            // lead position (when phrase has one)
         for (i in expected.indices) {
             val ok = rec[i].word == expected[i] ||
                 (i == leadIdx && rec[i].word in (LEAD_ALIASES[expected[i]] ?: emptySet()))
             if (!ok) return false
-            if (rec[i].conf < ANNOUNCE_MIN_CONF) return false      // unknown conf (-1) fails too
+            if (rec[i].conf < minConf) return false                // unknown conf (-1) fails too
         }
         return true
     }
 
-    // The wake decision (single-phrase port of portal-wake's strict route): the keyword must be
-    // present, preceded by a confident lead, in a short phrase with NO "[unk]" contamination.
-    private fun isWake(rec: List<RecWord>): Boolean {
-        val kw = keyword
+    // The wake decision (port of portal-wake's strict route), for a GIVEN phrase: the keyword
+    // must be present, preceded by a confident lead (if the phrase has one), in a short phrase
+    // with NO "[unk]" contamination. Single-word phrases (e.g. "alexa") have no lead check.
+    private fun isWakeFor(rec: List<RecWord>, phrase: String): Boolean {
+        val kw = keywordOf(phrase)
+        if (kw.isEmpty()) return false
         val i = rec.indexOfLast { it.word == kw }
         if (i < 0) return false
         if (rec.any { it.word == UNK_TOKEN }) return false                     // contamination → reject
         if (rec.size > CLEAN_PHRASE_MAX_WORDS) return false                    // must be a clean phrase
-        val leads = lead?.let { LEAD_ALIASES[it] ?: setOf(it) }
+        val leads = leadOf(phrase)?.let { LEAD_ALIASES[it] ?: setOf(it) }
         if (leads != null) {                                                   // confident lead in front
             val before = rec.subList(0, i)
             if (before.none { it.word in leads && (it.conf < 0 || it.conf >= LEAD_MIN_CONF) }) return false

@@ -180,6 +180,61 @@
             android:layout_marginTop="-16dp"
             android:layout_marginBottom="24dp" />
 
+        <!-- Alexa support (separate wake word, hands off to the revived falcon client) -->
+        <Switch
+            android:id="@+id/sw_alexa"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Alexa support"
+            android:textSize="16sp"
+            android:textStyle="bold"
+            android:textColor="@color/onSurface"
+            android:layout_marginBottom="4dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Adds a SECOND wake word that talks to Amazon Alexa (the revived on-device client), alongside your Jarvis wake word. Requires Alexa to be installed + signed in (Immortal). First-gen Portals only."
+            android:textSize="12sp"
+            android:textColor="@color/hint"
+            android:layout_marginBottom="8dp" />
+
+        <LinearLayout
+            android:id="@+id/row_alexa_phrase"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:layout_marginBottom="4dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Alexa wake word"
+                android:textSize="16sp"
+                android:textColor="@color/onSurface" />
+
+            <EditText
+                android:id="@+id/et_alexa_phrase"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:inputType="text"
+                android:maxLines="1"
+                android:textColor="@color/onSurface" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="A single word like “alexa”. Say it, pause, then your command (“alexa… what’s the weather”)."
+            android:textSize="12sp"
+            android:textColor="@color/onSurface"
+            android:alpha="0.6"
+            android:layout_marginTop="-16dp"
+            android:layout_marginBottom="24dp" />
+
         <Switch
             android:id="@+id/sw_voice_announce"
             android:layout_width="match_parent"

@@ -22,6 +22,8 @@ class DisplaySettingsActivity : AppCompatActivity() {
     private lateinit var swWake: Switch
     private lateinit var swVoiceAnnounce: Switch
     private lateinit var etWakePhrase: EditText
+    private lateinit var swAlexa: Switch
+    private lateinit var etAlexaPhrase: EditText
     private lateinit var seekPresenceSound: SeekBar
     private lateinit var tvPresenceSound: TextView
     private lateinit var swTimeout: Switch
@@ -59,6 +61,8 @@ class DisplaySettingsActivity : AppCompatActivity() {
         swWake = findViewById(R.id.sw_wake)
         swVoiceAnnounce = findViewById(R.id.sw_voice_announce)
         etWakePhrase = findViewById(R.id.et_wake_phrase)
+        swAlexa = findViewById(R.id.sw_alexa)
+        etAlexaPhrase = findViewById(R.id.et_alexa_phrase)
         seekPresenceSound = findViewById(R.id.seek_presence_sound)
         tvPresenceSound = findViewById(R.id.tv_presence_sound)
         swTimeout = findViewById(R.id.sw_screen_timeout)
@@ -115,6 +119,20 @@ class DisplaySettingsActivity : AppCompatActivity() {
                 Toast.LENGTH_SHORT).show()
         }
         etWakePhrase.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) saveWakePhrase() }
+
+        swAlexa.setOnCheckedChangeListener { _, checked ->
+            if (checked == prefs.alexaWakeEnabled) return@setOnCheckedChangeListener
+            if (checked && !alexaProvisioned()) {
+                // Enabling without falcon would arm a wake word that leads nowhere.
+                showAlexaProvisionDialog()
+                updateUi()   // snap the switch back off
+                return@setOnCheckedChangeListener
+            }
+            prefs.alexaWakeEnabled = checked
+            BridgeService.applyDisplaySettings(this)
+            updateUi()
+        }
+        etAlexaPhrase.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) saveAlexaPhrase() }
 
         // Read at trigger time by the service — no live apply needed.
         swVoiceAnnounce.setOnCheckedChangeListener { _, checked ->
@@ -189,6 +207,33 @@ class DisplaySettingsActivity : AppCompatActivity() {
         if (prefs.wakePhrase != before) BridgeService.applyDisplaySettings(this)
     }
 
+    private fun saveAlexaPhrase() {
+        val before = prefs.alexaWakePhrase
+        prefs.alexaWakePhrase = etAlexaPhrase.text.toString()
+        if (prefs.alexaWakePhrase != before && prefs.alexaWakeEnabled) BridgeService.applyDisplaySettings(this)
+    }
+
+    // Alexa support needs Amazon's Alexa client (falcon) on the device — installed and
+    // permission-granted by the USB provisioner only (no app can grant permissions to
+    // another package, so an over-the-air app update can never do this step).
+    private fun alexaProvisioned(): Boolean = runCatching {
+        packageManager.getPackageInfo("com.amazon.alexa.multimodal.falcon", 0)
+    }.isSuccess
+
+    private fun showAlexaProvisionDialog() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Alexa isn't provisioned yet")
+            .setMessage("Alexa support needs Amazon's Alexa client on this Portal. App " +
+                "updates can't install it — its permissions can only be granted over USB.\n\n" +
+                "One-time setup: connect a USB cable to a computer and run\n\n" +
+                "    provision.ps1 -Alexa\n\n" +
+                "then enter the code the Portal shows at amazon.com/code. Full steps are in " +
+                "the README under “Alexa on your Portal”.\n\n" +
+                "Once that's done, come back and turn this on.")
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
     private fun updateUi() {
         swPresence.isChecked = prefs.presenceEnabled
         swTimeout.isChecked = prefs.screenTimeoutEnabled
@@ -205,15 +250,25 @@ class DisplaySettingsActivity : AppCompatActivity() {
             etWakePhrase.setText(prefs.wakePhrase)
         findViewById<View>(R.id.row_wake_phrase).alpha = if (prefs.wakeWordEnabled) 1f else 0.4f
 
+        // Alexa support: a second, independent wake word. Its own phrase field greys when off.
+        swAlexa.isChecked = prefs.alexaWakeEnabled
+        if (!etAlexaPhrase.hasFocus() && etAlexaPhrase.text.toString() != prefs.alexaWakePhrase)
+            etAlexaPhrase.setText(prefs.alexaWakePhrase)
+        findViewById<View>(R.id.row_alexa_phrase).alpha = if (prefs.alexaWakeEnabled) 1f else 0.4f
+
         // Voice announce rides the wake detector — grey it out when wake is off.
         swVoiceAnnounce.isChecked = prefs.voiceAnnounceEnabled
         swVoiceAnnounce.isEnabled = prefs.wakeWordEnabled
         swVoiceAnnounce.alpha = if (prefs.wakeWordEnabled) 1f else 0.4f
         findViewById<View>(R.id.tv_voice_announce_note).alpha = if (prefs.wakeWordEnabled) 0.6f else 0.3f
+        // Our wake words (Jarvis + Alexa) need the mic; coexist gives it away — mutually exclusive.
+        val ourWake = prefs.wakeWordEnabled || prefs.alexaWakeEnabled
         swWake.isEnabled = !prefs.coexistVoiceAssistant
         swWake.alpha = if (prefs.coexistVoiceAssistant) 0.4f else 1f
-        swCoexist.isEnabled = !prefs.wakeWordEnabled
-        swCoexist.alpha = if (prefs.wakeWordEnabled) 0.4f else 1f
+        swAlexa.isEnabled = !prefs.coexistVoiceAssistant
+        swAlexa.alpha = if (prefs.coexistVoiceAssistant) 0.4f else 1f
+        swCoexist.isEnabled = !ourWake
+        swCoexist.alpha = if (ourWake) 0.4f else 1f
 
         // Enhanced (sound) presence needs the mic — and only applies while presence
         // detection is on — so it's unavailable while coexisting with an assistant.

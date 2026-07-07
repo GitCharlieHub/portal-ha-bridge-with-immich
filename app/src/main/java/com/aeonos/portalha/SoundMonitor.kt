@@ -38,6 +38,12 @@ class SoundMonitor(
     // mic is held (unlike frameSink, which is only attached during an intercom announce).
     @Volatile var wakeSink: ((buf: ShortArray, length: Int) -> Unit)? = null
 
+    // Audio session id of our current AudioRecord (-1 when not capturing). Lets the
+    // wake handoff tell OUR recording apart from the assistant's in the system's active
+    // recording list, without depending on release/acquire timing.
+    @Volatile var audioSessionId: Int = -1
+        private set
+
     fun isRunning() = running.get()
 
     fun start() {
@@ -73,7 +79,7 @@ class SoundMonitor(
 
             fun release() {
                 rec?.let { runCatching { it.stop() }; runCatching { it.release() } }
-                rec = null; sumSq = 0.0; count = 0
+                rec = null; audioSessionId = -1; sumSq = 0.0; count = 0
             }
 
             while (running.get()) {
@@ -103,6 +109,7 @@ class SoundMonitor(
                     }
                     runCatching { r.startRecording() }
                     rec = r
+                    audioSessionId = runCatching { r.audioSessionId }.getOrDefault(-1)
                     lastPublish = System.currentTimeMillis()
                     Log.i(TAG, "sound: mic acquired")
                 }

@@ -201,6 +201,32 @@ class MainActivity : AppCompatActivity() {
         // Safety net: if a self-update killed us before the install receiver could
         // restore high-contrast text, undo it now (no-op when nothing is pending).
         Updater.restoreInstallerContrast(this)
+        maybeShowAlexaProvisionNotice()
+    }
+
+    // One-time heads-up after landing on an Alexa-capable build: the OTA update delivers
+    // the Alexa features, but Amazon's Alexa client itself can only be provisioned over
+    // USB (permissions to another package aren't app-grantable). Shown once, and only on
+    // Portals that don't already have it.
+    private fun maybeShowAlexaProvisionNotice() {
+        if (prefs.alexaProvisionNoticeShown) return
+        prefs.alexaProvisionNoticeShown = true
+        val falconInstalled = runCatching {
+            packageManager.getPackageInfo("com.amazon.alexa.multimodal.falcon", 0)
+        }.isSuccess
+        if (falconInstalled) return
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("New: Alexa on your Portal")
+            .setMessage("This version can put real Amazon Alexa on this Portal — wake word, " +
+                "stories, music, “alexa stop”.\n\n" +
+                "It needs a ONE-TIME setup over USB (app updates can't do it): connect a " +
+                "cable to a computer and run\n\n    provision.ps1 -Alexa\n\n" +
+                "then enter the code shown at amazon.com/code, and enable Alexa support in " +
+                "Settings → Display & Presence. Full steps: README, “Alexa on your " +
+                "Portal”. Until then the Alexa features stay off — everything else works " +
+                "as before.")
+            .setPositiveButton("OK", null)
+            .show()
     }
 
 

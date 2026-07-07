@@ -5,7 +5,10 @@ import android.content.*
 import android.graphics.PixelFormat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
+import android.media.AudioRecordingConfiguration
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
@@ -15,6 +18,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import android.view.KeyEvent
 import android.view.OrientationEventListener
 import android.view.View
 import android.view.WindowManager
@@ -37,6 +41,45 @@ class BridgeService : Service() {
         // How long a loud sound keeps "enhanced presence" present after the noise
         // stops (people make only intermittent sound, so we bridge the gaps).
         private const val SOUND_PRESENCE_HOLD_MS = 60_000L
+        // Android 10+ denies the mic to a background-started assistant, so on wake we
+        // bring it to the foreground and wait this long before broadcasting, giving its
+        // activity time to resume so its mic-open succeeds. The screen is handed back
+        // the instant the assistant grabs the mic, so this is the main lever on how long
+        // the assistant is visible — trim with care (too low = assistant hears silence).
+        // Measured on the omni: mic-grab lands ~220ms after the broadcast, activity
+        // resume ~300-500ms after launch; 300ms keeps the grab just past the resume.
+        // If the assistant ever comes up deaf, raise this first (600 was rock solid).
+        private const val WAKE_FOREGROUND_MS = 300L
+        // Alexa/falcon on A10: our mic must be RELEASED and falcon fully foreground before
+        // we fire LISTEN, or falcon captures nothing ("sorry, something went wrong"). Give
+        // its activity a longer, safe window to resume + the mic slot to actually free.
+        private const val ALEXA_FOREGROUND_MS = 800L
+        // Barge-in LISTEN needs only the mic slot to free (falcon is already foreground and
+        // resumed), so a much shorter settle than ALEXA_FOREGROUND_MS. Raise if barge-in
+        // ever yields "sorry, something went wrong".
+        private const val ALEXA_BARGE_LISTEN_MS = 300L
+        // Falcon warm-up kick after our app (re)starts: wait for the dashboard to settle,
+        // then hold falcon foreground behind the cover just long enough for its voice
+        // session to re-establish (its activity launch IS the provisioner's "kick").
+        private const val FALCON_WARMUP_DELAY_MS = 12_000L
+        private const val FALCON_WARMUP_HOLD_MS = 2_500L
+        // Cold-abort detection: when falcon's SIMActivity has to be COLD-CREATED (first turn
+        // after its activity died, e.g. after our app restarts), its first capture opens
+        // while the uid is still policy-silenced — the server gets dead air and kills the
+        // turn ~200-400ms after LISTEN ("something went wrong"). A TURN_DONE this soon after
+        // our LISTEN can't be a real answer, so treat it as the race and re-fire LISTEN once:
+        // the activity is warm by then, and the retry also cuts the error speech short.
+        private const val ALEXA_COLD_ABORT_WINDOW_MS = 1_500L
+        private const val ALEXA_COLD_RETRY_MS = 900L
+        // The assistant must sit at baseline (no recording) continuously for this long
+        // before we call the conversation done — rides over inter-turn mic releases.
+        private const val WAKE_RECLAIM_DEBOUNCE_MS = 2_500L
+        // After Alexa finishes a turn AND stops speaking, hold this long before reclaiming —
+        // long enough for a multi-turn follow-up (ExpectSpeech) to reopen the mic. The hold
+        // is playback-aware: while her voice is audible (see assistantSpeaking()) the
+        // countdown doesn't run at all, so a long answer ("tell me a story") can't strand
+        // her mid-conversation; the grace starts when the speaker actually goes quiet.
+        private const val ALEXA_DIALOG_GRACE_MS = 4_000L
         @Volatile private var crashGuardInstalled = false
 
         private const val ACTION_SET_CAMERA = "com.aeonos.portalha.SET_CAMERA"
@@ -48,6 +91,11 @@ class BridgeService : Service() {
         private const val ACTION_APPLY_INTERCOM = "com.aeonos.portalha.APPLY_INTERCOM"
         private const val ACTION_TWOWAY_TEST = "com.aeonos.portalha.TWOWAY_TEST"
         private const val EXTRA_TWOWAY_ON = "two_way_on"
+        // Live-switch the wake handoff cover style for A/B testing, e.g.:
+        //   adb shell am startservice -n com.aeonos.portalha/.BridgeService \
+        //     -a com.aeonos.portalha.SET_COVER --es cover snapshot
+        private const val ACTION_SET_COVER = "com.aeonos.portalha.SET_COVER"
+        private const val EXTRA_COVER = "cover"
         private const val TWOWAY_IDLE_MS = 2_000L      // drop the reply channel after ~2 s of silence
 
         // Live reference to the running service so the dashboard UI + the PTT
@@ -74,6 +122,10 @@ class BridgeService : Service() {
         // HaExternalBridge). Reuses the wake flow: brings the assistant up, yields the mic,
         // reclaims it when done. No-op if the service isn't running.
         fun requestAssist(@Suppress("UNUSED_PARAMETER") context: Context) { instance?.fireWakeHandoff() }
+
+        // The YouTube cast screen closed (user long-pressed out, or it died) —
+        // sync the DIAL app state so the phone offers a fresh launch next time.
+        fun castScreenClosed() { instance?.dialServer?.appRunning = false }
 
         // Re-evaluate the PTT overlays after a pref/config change.
         fun applyIntercomOverlay(context: Context) =
@@ -150,8 +202,11 @@ class BridgeService : Service() {
     // Screen + audio
     private var screenReceiver: BroadcastReceiver? = null
     private var audioReceiver: BroadcastReceiver? = null
+    private var alexaTurnDoneReceiver: BroadcastReceiver? = null
+    private var debugWakeReceiver: BroadcastReceiver? = null
     private var sensorBridge: SensorBridge? = null
     private var soundMonitor: SoundMonitor? = null
+    private var dialServer: DialServer? = null
     private var twoWay: TwoWayEngine? = null
     private var twoWayOrb: AnnounceOrbOverlay? = null
     @Volatile private var twoWayChannelOpen = false
@@ -269,7 +324,7 @@ class BridgeService : Service() {
         }
         // Coexist with an external voice assistant: release the mic. Our own wake word
         // (wakeDetector) needs the mic, so the two are mutually exclusive — wake wins.
-        val coexist = p.coexistVoiceAssistant && !p.wakeWordEnabled
+        val coexist = p.coexistVoiceAssistant && !p.wakeWordEnabled && !p.alexaWakeEnabled
         intercom = Intercom(this, p.deviceId, { prefs?.deviceName ?: "Portal" }, { localIp() }, ::publishBytes)
             .also {
                 it.attachSoundMonitor(if (coexist) null else soundMonitor)
@@ -296,7 +351,12 @@ class BridgeService : Service() {
         wakeDetector = WakeWordDetector(this,
             onWake = { fireWakeHandoff() },
             onAnnounce = { startVoiceAnnounce() },
-        ).also { it.phrase = p.wakePhrase }
+            onAlexaWake = { fireAlexaHandoff() },
+            onAlexaStop = { fireAlexaStop() },
+        ).also {
+            it.phrase = if (p.wakeWordEnabled) p.wakePhrase else ""
+            it.alexaPhrase = if (p.alexaWakeEnabled) p.alexaWakePhrase else ""
+        }
         soundMonitor?.wakeSink = { buf, n -> wakeDetector?.feed(buf, n) }
         twoWay = TwoWayEngine(this, { intercom }, { talking ->
             lastTwoWayActivityMs = System.currentTimeMillis()
@@ -311,7 +371,14 @@ class BridgeService : Service() {
         intercom?.probeTransmitCapability()   // ~1.1s, owns the mic while measuring
         Handler(Looper.getMainLooper()).postDelayed({
             if (!coexist) soundMonitor?.start()   // coexist = leave the mic for the assistant
-            if (p.wakeWordEnabled) { wakeDetector?.start(); startedWakePhrase = p.wakePhrase }
+            if (p.wakeWordEnabled || p.alexaWakeEnabled) { wakeDetector?.start(); startedWakePhrase = wakeSig(p) }
+            // Start watching falcon's connection state on boot so the Alexa handoff can gate on
+            // it (falcon takes a while to reconnect after a reboot — see FalconReadiness).
+            if (p.alexaWakeEnabled && falconReadiness == null) falconReadiness = FalconReadiness().also { it.start() }
+            // Warm falcon up so the FIRST "alexa" after our restart doesn't land on a stale
+            // session ("something went wrong"). NOTE this onCreate path — not reconcileWake —
+            // is what runs at boot; reconcileWake only fires on a settings APPLY.
+            if (p.alexaWakeEnabled) scheduleFalconWarmup()
             reconcileIntercomOverlays()
         }, 1_500L)
 
@@ -326,6 +393,22 @@ class BridgeService : Service() {
         registerAudioReceiver()
         // Stops Portal's launcher from idle-kicking us to the home screen.
         mediaKeepAlive.start(this)
+
+        // YouTube cast receiver: DIAL discovery makes this Portal show up in the
+        // cast menu of any YouTube app on the LAN; a cast launches TvAppActivity.
+        dialServer = DialServer(
+            this,
+            friendlyName = { prefs?.deviceName ?: "Portal" },
+            onLaunch = { query ->
+                Handler(Looper.getMainLooper()).post {
+                    ScreenControl.wake(this)                       // cast-to-wake
+                    lastActivityMs = System.currentTimeMillis()
+                    runCatching { TvAppActivity.launch(this, query) }
+                        .onFailure { Log.w(TAG, "cast: launch failed: ${it.message}") }
+                }
+            },
+            onStopApp = { TvAppActivity.close() }
+        ).also { it.start() }
 
         screenOn = getSystemService(PowerManager::class.java).isInteractive
         lastActivityMs = System.currentTimeMillis()
@@ -396,6 +479,11 @@ class BridgeService : Service() {
                 }.onFailure { Log.w(TAG, "ensureCamera failed: ${it.message}") }
             }
         }
+        if (intent?.action == ACTION_SET_COVER) {
+            val style = intent.getStringExtra(EXTRA_COVER) ?: "whoosh"
+            (prefs ?: Prefs(this).also { prefs = it }).wakeCoverStyle = style
+            Log.i(TAG, "wake: cover style set to '$style'")
+        }
         if (intent?.action == ACTION_APPLY_INTERCOM) {
             prefs ?: Prefs(this).also { prefs = it }
             hideIntercomOverlays()          // rebuild from the (possibly edited) config
@@ -435,11 +523,25 @@ class BridgeService : Service() {
         runCatching { mqtt?.disconnect(0) }
         screenReceiver?.let { unregisterReceiver(it) }
         audioReceiver?.let { unregisterReceiver(it) }
+        alexaTurnDoneReceiver?.let { runCatching { unregisterReceiver(it) } }
+        debugWakeReceiver?.let { runCatching { unregisterReceiver(it) } }
         sensorBridge?.stop()
         soundMonitor?.stop()
         wakeDetector?.stop()
+        falconReadiness?.stop(); falconReadiness = null
         twoWay?.stop(); twoWayOrb?.hide()
-        wakeHandler.removeCallbacks(reclaimPoll); micYieldedForWake = false
+        dialServer?.stop(); dialServer = null
+        wakeHandler.removeCallbacks(reclaimTimeout); wakeHandler.removeCallbacks(reclaimDebounce)
+        micYieldedForWake = false
+        wakeCoverView?.let { runCatching { getSystemService(WindowManager::class.java).removeView(it) }; wakeCoverView = null }
+        wakeRecordingCallback?.let { cb ->
+            runCatching { getSystemService(AudioManager::class.java)?.unregisterAudioRecordingCallback(cb) }
+            wakeRecordingCallback = null
+        }
+        wakePlaybackCallback?.let { cb ->
+            runCatching { getSystemService(AudioManager::class.java)?.unregisterAudioPlaybackCallback(cb) }
+            wakePlaybackCallback = null
+        }
         intercom?.release()
         hideIntercomOverlays()
         instance = null
@@ -532,6 +634,61 @@ class BridgeService : Service() {
             addAction("android.media.VOLUME_CHANGED_ACTION")
             addAction("android.media.STREAM_MUTE_CHANGED_ACTION")
         })
+
+        // falcon fires TURN_DONE at the end of EACH turn. But a turn can be one step of a
+        // MULTI-TURN dialog — Alexa asks a follow-up ("what's the reminder?") and reopens the
+        // mic herself, no wake word. If we reclaim (and return the screen) on the FIRST
+        // TURN_DONE, falcon backgrounds → its reopened capture is silenced on A10 → she never
+        // hears the answer. So on TURN_DONE we DON'T reclaim immediately: we start a grace
+        // window, keeping falcon foreground (behind the cover) + our mic yielded. A follow-up
+        // fires another TURN_DONE which resets the timer; we reclaim only once she's truly done.
+        alexaTurnDoneReceiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                if (wakeIsAlexa && micYieldedForWake) {
+                    wakeHandler.removeCallbacks(reclaimDebounce)
+                    val sinceListen = System.currentTimeMillis() - lastListenAtMs
+                    if (sinceListen in 1..ALEXA_COLD_ABORT_WINDOW_MS && !alexaColdRetried) {
+                        // Cold-create silencing race (see ALEXA_COLD_ABORT_WINDOW_MS) —
+                        // one automatic retry; falcon's activity is warm now.
+                        alexaColdRetried = true
+                        Log.i(TAG, "wake: cold abort (TURN_DONE ${sinceListen}ms after LISTEN) -> auto-retrying")
+                        wakeHandler.postDelayed({
+                            if (micYieldedForWake && wakeIsAlexa) broadcastAlexaListen("cold-retry")
+                        }, ALEXA_COLD_RETRY_MS)
+                        return   // hold the yield; the retried turn drives the state from here
+                    }
+                    if (assistantSpeaking()) {
+                        // TURN_DONE can arrive while the response audio is still playing
+                        // (long answers, stories) — hold; the playback callback starts the
+                        // grace once she actually stops talking.
+                        wakeSpeakingSeen = true
+                        Log.i(TAG, "wake: falcon TURN_DONE but Alexa still speaking -> holding")
+                    } else {
+                        Log.i(TAG, "wake: falcon TURN_DONE -> grace (${ALEXA_DIALOG_GRACE_MS}ms) for a possible follow-up")
+                        wakeHandler.postDelayed(reclaimDebounce, ALEXA_DIALOG_GRACE_MS)
+                    }
+                }
+            }
+        }
+        runCatching {
+            registerReceiver(alexaTurnDoneReceiver, IntentFilter().apply {
+                addAction("com.amazon.alexa.multimodal.falcon.TURN_DONE")
+            })
+        }
+
+        // Debug: fire the Alexa handoff from adb (no voice needed) — reproduces/verifies
+        // cold-start turn failures from the desk. Falcon just listens to the room and ends
+        // the turn if nothing is said.
+        //   adb shell am broadcast -a com.aeonos.portalha.DEBUG_ALEXA_WAKE
+        debugWakeReceiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                Log.i(TAG, "wake: DEBUG_ALEXA_WAKE -> fireAlexaHandoff")
+                fireAlexaHandoff()
+            }
+        }
+        runCatching {
+            registerReceiver(debugWakeReceiver, IntentFilter("com.aeonos.portalha.DEBUG_ALEXA_WAKE"))
+        }
     }
 
     // ── MQTT loop ─────────────────────────────────────────────────────────────
@@ -1089,7 +1246,8 @@ class BridgeService : Service() {
     //        and put the intercom on on-demand capture. OFF → reclaim the mic + sensor.
     // Idempotent — the isRunning() guards make repeated apply calls a no-op.
     private fun applyCoexist(p: Prefs) {
-        val coexist = p.coexistVoiceAssistant
+        // Our own wake word (Jarvis or Alexa) needs the mic, so it overrides coexist.
+        val coexist = p.coexistVoiceAssistant && !p.wakeWordEnabled && !p.alexaWakeEnabled
         intercom?.attachSoundMonitor(if (coexist) null else soundMonitor)
         intercom?.setOnDemandCapture(coexist)
         if (coexist) {
@@ -1136,7 +1294,7 @@ class BridgeService : Service() {
             } else {
                 wakeHandler.removeCallbacks(twoWayIdleCheck)
                 twoWay?.stop()
-                val coexist = prefs?.let { it.coexistVoiceAssistant && !it.wakeWordEnabled } ?: false
+                val coexist = prefs?.let { it.coexistVoiceAssistant && !it.wakeWordEnabled && !it.alexaWakeEnabled } ?: false
                 if (!coexist && soundMonitor?.isRunning() == false) soundMonitor?.start()
                 twoWayOrb?.hide(); twoWayOrb = null
                 Log.i(TAG, "2way channel: closed — mic restored")
@@ -1161,6 +1319,10 @@ class BridgeService : Service() {
     // Wake matching pauses for the whole possible window (armed + live) so our own
     // announcement audio can't trigger anything; VoiceAnnounce.onDone re-arms sooner.
     private fun startVoiceAnnounce() {
+        if (micYieldedForWake) {
+            Log.i(TAG, "announce: wake during a yielded turn — ignored")
+            return
+        }
         val p = prefs ?: return
         if (!p.voiceAnnounceEnabled) { Log.i(TAG, "announce: disabled in settings"); return }
         wakeDetector?.pauseMatching(36_000L)
@@ -1168,6 +1330,13 @@ class BridgeService : Service() {
     }
 
     private fun fireWakeHandoff() {
+        // The barge-in mic runs while Alexa speaks, so the OTHER wake routes can match on
+        // her audio mid-turn — only the Alexa barge-in is valid then; don't stack a Jarvis
+        // handoff (or the assist button) on top of a live Alexa conversation.
+        if (micYieldedForWake) {
+            Log.i(TAG, "wake: Jarvis/assist wake during a yielded turn — ignored")
+            return
+        }
         val p = prefs ?: return
         val id = p.wakePhrase.trim().lowercase().substringAfterLast(' ').ifEmpty { "jarvis" }
         val pkg = p.wakeAssistantPackage
@@ -1186,101 +1355,671 @@ class BridgeService : Service() {
         // stays subtle (no takeover) there.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             wakeHandler.post {
-                runCatching {
-                    packageManager.getLaunchIntentForPackage(pkg)
-                        ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        ?.let { startActivity(it); Log.i(TAG, "wake: brought $pkg to foreground") }
-                }.onFailure { Log.w(TAG, "wake: foreground launch failed: ${it.message}") }
+                // Cover the screen FIRST and wait until it is verifiably on-screen, only
+                // then bring the assistant up behind it — it grabs the mic completely
+                // unseen. The cover comes down in bringDashboardToFront once it has the mic.
+                showWakeCover(Runnable {
+                    runCatching {
+                        packageManager.getLaunchIntentForPackage(pkg)
+                            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                            ?.let { startActivity(it); Log.i(TAG, "wake: brought $pkg to foreground") }
+                    }.onFailure { Log.w(TAG, "wake: foreground launch failed: ${it.message}") }
+                    wakeHandler.postDelayed({ broadcastAndYield() }, WAKE_FOREGROUND_MS)   // let the activity resume first
+                })
             }
-            wakeHandler.postDelayed({ broadcastAndYield() }, 600L)   // let the activity resume first
         } else {
             broadcastAndYield()
         }
     }
 
+    // Alexa handoff: our Vosk detector heard "alexa" → poke the revived falcon client with
+    // its own LISTEN broadcast (reverse-engineered from millennium; the SAME thing millennium
+    // fires). Then release our warm mic so falcon can capture the follow-up command, and
+    // reclaim it when falcon is done (the shared yield/reclaim path detects the assistant's
+    // recording by session id and restores our mic + wake word). No screen cover / foreground
+    // dance needed: falcon runs headless and, on the A9 Portals this is supported on, captures
+    // fine in the background. falcon must already be linked + connected (ReadyState) — it stays
+    // connected once the initial kick has established it (see Immortal provisioning).
+    // True while the current handoff is to Alexa/falcon (vs Jarvis). Changes the reclaim
+    // behaviour: unlike Jarvis (screen returns the instant it grabs the mic), falcon must
+    // STAY foreground for the whole turn on A10 — backgrounding it re-silences its capture
+    // and hides its response UI. So we hold the screen on falcon until the turn is done.
+    @Volatile private var wakeIsAlexa = false
+    private var alexaBar: AlexaBarOverlay? = null
+    private var falconReadiness: FalconReadiness? = null
+
+    @Volatile private var lastListenAtMs = 0L
+    @Volatile private var alexaColdRetried = false
+
+    private fun broadcastAlexaListen(tag: String) {
+        runCatching {
+            sendBroadcast(Intent("com.amazon.alexa.multimodal.falcon.LISTEN")
+                .setPackage("com.amazon.alexa.multimodal.falcon")
+                .addFlags(0x10000020))
+            lastListenAtMs = System.currentTimeMillis()
+            Log.i(TAG, "wake: fired Alexa LISTEN -> falcon ($tag)")
+        }.onFailure { Log.w(TAG, "wake: alexa LISTEN failed: ${it.message}") }
+    }
+
+    // "alexa stop" spoken in one breath. A LISTEN can't act on words already spoken —
+    // falcon would just listen to the room for ~8s, error out ("something went wrong"),
+    // and kill the music session on its way down. So act locally instead.
+    private fun fireAlexaStop() {
+        if (micYieldedForWake) {
+            if (wakeIsAlexa) {
+                // Mid-turn (story speech): the barge-in LISTEN itself cuts her speech —
+                // that IS the stop. She'll briefly listen and end the turn quietly.
+                Log.i(TAG, "wake: 'alexa stop' mid-turn -> barge cuts her speech")
+                fireAlexaHandoff()
+            } else Log.i(TAG, "wake: 'alexa stop' during a non-Alexa turn — ignored")
+            return
+        }
+        if (falconPlaying()) {
+            // Music / long-form playback with the turn long over: pause her player
+            // directly — instant, offline, and it doesn't tear down the session.
+            Log.i(TAG, "wake: 'alexa stop' -> pausing falcon playback (media key)")
+            dispatchMediaPause()
+            wakeHandler.postDelayed({
+                if (falconPlaying()) {
+                    // The key didn't take (e.g. a timer alarm, or key routing lost) —
+                    // fall back to a normal listen so the user can repeat the command.
+                    Log.i(TAG, "wake: media pause didn't take -> normal handoff")
+                    fireAlexaHandoff()
+                } else {
+                    Log.i(TAG, "wake: falcon playback stopped")
+                    // On A9 falcon's card is still on screen with nothing playing —
+                    // restore the dashboard (no-op when we're already front).
+                    bringDashboardToFront()
+                }
+            }, 800L)
+            return
+        }
+        // Nothing of hers is playing — behave like a plain wake so she hears the intent.
+        fireAlexaHandoff()
+    }
+
+    private fun dispatchMediaPause() {
+        val am = getSystemService(AudioManager::class.java) ?: return
+        val now = android.os.SystemClock.uptimeMillis()
+        runCatching {
+            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_PAUSE, 0))
+            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MEDIA_PAUSE, 0))
+        }.onFailure { Log.w(TAG, "wake: media key dispatch failed: ${it.message}") }
+    }
+
+    private fun fireAlexaHandoff() {
+        // Barge-in: the wake word matched while a held Alexa turn is mid-speech (our mic
+        // runs during her speaking phase — see startBargeListen). Falcon is already
+        // foreground behind the cover, so no yield/cover dance: free the mic slot, then
+        // re-fire LISTEN — falcon cuts its own speech and listens ("alexa, stop" mid-story).
+        if (micYieldedForWake) {
+            if (!wakeIsAlexa) { Log.i(TAG, "wake: 'alexa' during a non-Alexa turn — ignored"); return }
+            Log.i(TAG, "wake: barge-in — interrupting Alexa")
+            wakeHandler.removeCallbacks(reclaimDebounce)
+            stopBargeListen("barge-in")
+            wakeHandler.postDelayed({ broadcastAlexaListen("barge-in") }, ALEXA_BARGE_LISTEN_MS)
+            return
+        }
+        // After a boot, falcon can take a while to reconnect on A10. Firing LISTEN at a
+        // disconnected falcon just yields "sorry, something went wrong" — so if it isn't
+        // ReadyState yet, tell the user it's starting up and skip; it'll work once connected.
+        if (falconReadiness?.isReady() == false) {
+            Log.i(TAG, "wake: heard 'alexa' but falcon not connected yet — skipping (still starting up)")
+            wakeHandler.post {
+                runCatching {
+                    Toast.makeText(this, "Alexa is still starting up — try again in a moment",
+                        Toast.LENGTH_SHORT).show()
+                }
+            }
+            wakeDetector?.pauseMatching(2_000L)   // don't machine-gun retries
+            return
+        }
+        wakeIsAlexa = true
+        // ORDER MATTERS (this was the "sorry, something went wrong" bug): free OUR mic FIRST
+        // so the slot is actually available when falcon captures, THEN bring falcon foreground,
+        // THEN — after it has resumed and the slot has freed — fire LISTEN.
+        yieldMicForWake()   // stops SoundMonitor + arms the reclaim watch
+        fun fireListen() {
+            broadcastAlexaListen("handoff")
+            // Echo-style listening bar as the "speak now" cue (falcon's own UI is hidden by
+            // the cover). Shows above the cover; hidden at reclaim (turn done).
+            (alexaBar ?: AlexaBarOverlay(this).also { alexaBar = it }).show()
+        }
+        // Android 10 SILENCES a recorder that isn't the foreground app (verified: millennium
+        // gets `silenced:true` in the background). Bring falcon's own activity to the front so
+        // its capture is un-silenced; it renders its Alexa response (weather card etc.) itself.
+        // Held foreground for the whole turn (wakeIsAlexa) — see onWakeRecordingChanged. On A9
+        // falcon captures fine headless, so just fire.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Seamless, exactly like Jarvis: cover the screen FIRST, then bring falcon up
+            // BEHIND the cover. The cover is an overlay, so falcon is still the top ACTIVITY
+            // (its mic is un-silenced on A10) but stays hidden; its audio response plays
+            // through. Unlike Jarvis we keep the cover up for the WHOLE turn (falcon must stay
+            // foreground on A10) — reclaim (falcon's TURN_DONE) drops it back to the dashboard.
+            wakeHandler.post {
+                showWakeCover(Runnable {
+                    runCatching {
+                        startActivity(Intent()
+                            .setClassName("com.amazon.alexa.multimodal.falcon",
+                                "com.amazon.alexa.multimodal.falcon.SIMActivity")
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION))
+                        Log.i(TAG, "wake: brought falcon foreground behind cover (A10 un-silence)")
+                    }.onFailure { Log.w(TAG, "wake: falcon foreground failed: ${it.message}") }
+                    wakeHandler.postDelayed({ fireListen() }, ALEXA_FOREGROUND_MS)
+                })
+            }
+        } else {
+            fireListen()
+        }
+    }
+
     // After the wake fires, the assistant needs the mic but our SoundMonitor is holding
-    // it — so the assistant hears silence ("ignores you"). Release the mic now and
-    // reclaim once the assistant stops recording. We poll activeRecordingConfigurations
-    // (after a short settle so our own capture has stopped and the assistant has started):
-    // once we've SEEN a recording and it drops to none, the conversation is over. A long
-    // timeout always recovers in case the handoff never took.
+    // it — so the assistant hears silence ("ignores you"). We split the handoff into two
+    // independent stages so the SCREEN comes back as fast as physically possible:
+    //
+    //   1. Screen: the assistant only needs the FOREGROUND to *acquire* the mic (an
+    //      in-progress capture keeps running once it's backgrounded, Android 10+). So the
+    //      instant it grabs the mic we hand the screen straight back to our dashboard —
+    //      typically within ~1s of the wake, not when the whole conversation ends.
+    //   2. Mic: our SoundMonitor stays yielded until the assistant actually STOPS
+    //      recording (end of the conversation), then we reclaim the warm mic.
+    //
+    // Both transitions are detected event-driven via an AudioRecordingCallback (fires the
+    // millisecond the recording set changes) rather than polling, so there's no fixed
+    // settle/poll latency. We tell the assistant's recording apart from our own by audio
+    // session id (SoundMonitor.audioSessionId) — no dependence on release/acquire timing,
+    // so a fast assistant grab can't be mistaken for "nothing there".
     @Volatile private var micYieldedForWake = false
     @Volatile private var wakeConsumerSeen = false
+    @Volatile private var wakeFocusReturned = false
     @Volatile private var wakeYieldStartMs = 0L
+    private var wakeRecordingCallback: AudioManager.AudioRecordingCallback? = null
+    private var wakePlaybackCallback: AudioManager.AudioPlaybackCallback? = null
+    @Volatile private var wakeSpeakingSeen = false
     private val wakeHandler = Handler(Looper.getMainLooper())
-    private val reclaimPoll = object : Runnable {
+    private val reclaimTimeout = object : Runnable {
         override fun run() {
-            if (!micYieldedForWake) return
-            val active = runCatching {
-                getSystemService(AudioManager::class.java)?.activeRecordingConfigurations?.size ?: 0
-            }.getOrDefault(0)
-            if (active > 0) wakeConsumerSeen = true
-            val elapsed = System.currentTimeMillis() - wakeYieldStartMs
-            if ((wakeConsumerSeen && active == 0) || elapsed > 120_000L) {
-                reclaimMicAfterWake(if (wakeConsumerSeen) "assistant done" else "timeout")
-            } else {
-                wakeHandler.postDelayed(this, 1_000L)
+            // The cap is a safety net for turns that end weirdly — not a limit on a healthy
+            // long interaction. A story alternates speaking and listening for minutes; if
+            // Alexa is audibly mid-answer OR holding the mic, push the cap back instead of
+            // cutting her off; going idle re-enters the normal grace path. A pending grace
+            // also defers it (it reclaims within seconds anyway) — the cap once beat a
+            // fresh grace by 200ms and cut a possible follow-up short.
+            val gracePending = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                wakeHandler.hasCallbacks(reclaimDebounce)
+            if (wakeIsAlexa && micYieldedForWake &&
+                (assistantSpeaking() || assistantRecording() || gracePending)) {
+                Log.i(TAG, "wake: turn cap reached but Alexa still active -> extending")
+                wakeHandler.postDelayed(this, 20_000L)
+                return
             }
+            reclaimMicAfterWake("timeout")
         }
+    }
+
+    // Any active recorder that isn't our own SoundMonitor = the assistant capturing.
+    private fun assistantRecording(): Boolean {
+        val am = getSystemService(AudioManager::class.java) ?: return false
+        val ours = soundMonitor?.audioSessionId ?: -1
+        val configs = runCatching { am.activeRecordingConfigurations }.getOrDefault(emptyList())
+        return configs.any { it.clientAudioSessionId != ours }
+    }
+
+    // Falcon's uid + the hidden AudioPlaybackConfiguration.getClientUid() — used to tell
+    // "falcon is playing SOMETHING" (voice OR music) apart from our own dashboard WebView's
+    // permanently-active media player, which usage tags alone cannot do. Reflection works on
+    // the fleet because provisioning sets hidden_api_policy=1; when it doesn't, callers fall
+    // back to the voice-only fingerprint below.
+    private val falconUid: Int by lazy {
+        runCatching {
+            packageManager.getApplicationInfo("com.amazon.alexa.multimodal.falcon", 0).uid
+        }.getOrDefault(-1)
+    }
+    private val playbackClientUidMethod: java.lang.reflect.Method? by lazy {
+        runCatching { AudioPlaybackConfiguration::class.java.getMethod("getClientUid") }.getOrNull()
+    }
+
+    // Any active player owned by falcon — its voice, a story soundtrack, or music.
+    private fun falconPlaying(): Boolean {
+        if (falconUid < 0) return false
+        val m = playbackClientUidMethod ?: return assistantSpeaking()
+        val am = getSystemService(AudioManager::class.java) ?: return false
+        val configs = runCatching { am.activePlaybackConfigurations }.getOrDefault(emptyList())
+        return configs.any { cfg -> runCatching { m.invoke(cfg) as? Int }.getOrNull() == falconUid }
+    }
+
+    // Alexa's voice, as it actually appears on the Portal (measured via dumpsys audio,
+    // 2026-07-07): an AudioTrack from falcon tagged USAGE_ASSISTANCE_SONIFICATION +
+    // CONTENT_TYPE_SPEECH. She does NOT use USAGE_ASSISTANT. That exact pair is the
+    // narrowest "Alexa is talking" signature: the listening beeps are SONIFICATION content
+    // (systemui), and our own dashboard WebView keeps a permanent MEDIA player alive —
+    // matching either of those would hold the turn open forever. Falcon MUSIC playback is
+    // deliberately not matched: it survives backgrounding, so reclaiming under it is fine.
+    private fun assistantSpeaking(): Boolean {
+        val am = getSystemService(AudioManager::class.java) ?: return false
+        val configs = runCatching { am.activePlaybackConfigurations }.getOrDefault(emptyList())
+        return configs.any {
+            it.audioAttributes.usage == AudioAttributes.USAGE_ASSISTANCE_SONIFICATION &&
+                it.audioAttributes.contentType == AudioAttributes.CONTENT_TYPE_SPEECH
+        }
+    }
+
+    // ── Barge-in ──────────────────────────────────────────────────────────────
+    // While Alexa SPEAKS her mic is closed, so the Portal's capture slot is free: run our
+    // warm mic + wake detector for exactly that window, letting "alexa" interrupt a long
+    // response ("alexa, stop" mid-story). The slot MUST be handed straight back the moment
+    // she wants it (her speech ends / her capture appears) — one of our recorders squatting
+    // on the slot while falcon captures is the original "sorry, something went wrong" bug.
+    private fun startBargeListen() {
+        if (!micYieldedForWake || !wakeIsAlexa) return
+        if (prefs?.alexaWakeEnabled != true) return
+        if (soundMonitor?.isRunning() != false) return
+        soundMonitor?.start()
+        Log.i(TAG, "wake: barge-in armed — wake word can interrupt her")
+    }
+
+    private fun stopBargeListen(reason: String) {
+        if (!micYieldedForWake) return
+        if (soundMonitor?.isRunning() != true) return
+        soundMonitor?.stop()
+        Log.i(TAG, "wake: barge-in mic released ($reason)")
     }
 
     private fun yieldMicForWake() {
         if (micYieldedForWake) return
         micYieldedForWake = true
         wakeConsumerSeen = false
+        wakeFocusReturned = false
+        wakeSpeakingSeen = false
+        alexaColdRetried = false
         wakeYieldStartMs = System.currentTimeMillis()
         soundMonitor?.stop()        // free the mic; the wake detector idles on an empty queue
         Log.i(TAG, "wake: yielded mic to assistant")
-        wakeHandler.postDelayed(reclaimPoll, 1_500L)   // settle, then watch for the assistant to finish
+
+        val am = getSystemService(AudioManager::class.java)
+        if (am != null) {
+            val cb = object : AudioManager.AudioRecordingCallback() {
+                override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>?) {
+                    onWakeRecordingChanged()
+                }
+            }
+            wakeRecordingCallback = cb
+            am.registerAudioRecordingCallback(cb, wakeHandler)
+            onWakeRecordingChanged()   // in case the assistant already grabbed the mic
+
+            // Alexa only: also watch the OUTPUT side. A long response (story) keeps playing
+            // after the mic is released and even after TURN_DONE — and reclaiming then
+            // backgrounds falcon, which SILENCES ITS RECORDER on A10 (the audio finishes,
+            // but she can never hear a follow-up again — the interactive story dies). Track
+            // her voice player so the grace only starts once she has actually stopped.
+            if (wakeIsAlexa) {
+                val pcb = object : AudioManager.AudioPlaybackCallback() {
+                    override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+                        onWakePlaybackChanged()
+                    }
+                }
+                wakePlaybackCallback = pcb
+                am.registerAudioPlaybackCallback(pcb, wakeHandler)
+            }
+        }
+
+        // Absolute safety net if the assistant never records / never stops cleanly. Alexa
+        // turns are short and we also reclaim on falcon's TURN_DONE, so a much tighter cap
+        // keeps the wake word from going deaf for long if a turn ends weirdly.
+        wakeHandler.postDelayed(reclaimTimeout, if (wakeIsAlexa) 20_000L else 120_000L)
+    }
+
+    // A voice assistant releases the mic BETWEEN turns (it stops recording to speak its
+    // reply, then grabs it again for your follow-up). So a momentary "not recording" isn't
+    // necessarily "done" — only reclaim if it STAYS quiet this long.
+    private val reclaimDebounce = Runnable { reclaimMicAfterWake("assistant done") }
+
+    private fun onWakeRecordingChanged() {
+        if (!micYieldedForWake) return
+        val elapsed = System.currentTimeMillis() - wakeYieldStartMs
+        if (assistantRecording()) {
+            // The assistant holds the mic. Cancel any pending reclaim (it was just an
+            // inter-turn pause) and, the first time, hand the screen back immediately.
+            wakeHandler.removeCallbacks(reclaimDebounce)
+            // Safety net: if her capture opened while our barge-in mic was still up
+            // (speech-end stop lost the race), free the slot right now.
+            if (wakeIsAlexa) stopBargeListen("her capture opened")
+            wakeConsumerSeen = true
+            // Jarvis: return the screen the instant it grabs the mic (capture continues
+            // backgrounded). Alexa/falcon: do NOT — it must stay foreground for the whole
+            // turn on A10 (backgrounding re-silences it), so we return only at reclaim.
+            if (!wakeFocusReturned && !wakeIsAlexa && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                wakeFocusReturned = true
+                bringDashboardToFront()
+                Log.i(TAG, "wake: assistant has mic (${elapsed}ms) -> dashboard back to front")
+            }
+        } else if (wakeConsumerSeen) {
+            // Not recording — maybe done, maybe just speaking a reply (or about to ask a
+            // multi-turn follow-up). Wait for it to stay quiet; if it re-grabs the mic the
+            // branch above cancels this. Alexa gets the dialog grace so an ExpectSpeech
+            // follow-up has room to reopen the mic — but if she's already audibly speaking,
+            // don't count down at all; the playback callback starts the grace when she stops.
+            wakeHandler.removeCallbacks(reclaimDebounce)
+            if (wakeIsAlexa && assistantSpeaking()) {
+                wakeSpeakingSeen = true
+                startBargeListen()   // her mic just closed and she's talking — arm barge-in
+                return
+            }
+            wakeHandler.postDelayed(reclaimDebounce,
+                if (wakeIsAlexa) ALEXA_DIALOG_GRACE_MS else WAKE_RECLAIM_DEBOUNCE_MS)
+        }
+    }
+
+    // Output-side twin of onWakeRecordingChanged, Alexa turns only. While her response is
+    // audible we hold the yield open (no grace countdown, cover + falcon stay up); the
+    // moment the speaker goes quiet we start the post-speech grace — so "tell me a story"
+    // plays to the end and the mic still comes back a few seconds after she finishes.
+    private fun onWakePlaybackChanged() {
+        if (!micYieldedForWake || !wakeIsAlexa) return
+        val am = getSystemService(AudioManager::class.java) ?: return
+        // Log every change during a turn as usage/content pairs — if falcon's voice ever
+        // shows up tagged differently than 13/1 (see assistantSpeaking), this reveals it.
+        val pairs = runCatching { am.activePlaybackConfigurations }.getOrDefault(emptyList())
+            .map { "${it.audioAttributes.usage}/${it.audioAttributes.contentType}" }
+        Log.i(TAG, "wake: playback changed while yielded, usage/content=$pairs")
+        if (assistantSpeaking()) {
+            wakeHandler.removeCallbacks(reclaimDebounce)
+            if (!wakeSpeakingSeen) {
+                wakeSpeakingSeen = true
+                Log.i(TAG, "wake: Alexa speaking -> holding turn until she stops")
+            }
+            if (!assistantRecording()) startBargeListen()
+        } else if (wakeSpeakingSeen) {
+            wakeSpeakingSeen = false
+            // Give the slot back FIRST — a follow-up listen opens her capture ~250ms after
+            // her voice stops, and our recorder must not be squatting on it.
+            stopBargeListen("she stopped speaking")
+            // Ignore the transition if she's already recording again (barge-less follow-up
+            // opened the mic) — the recording branch owns the reclaim from there.
+            if (!assistantRecording()) {
+                Log.i(TAG, "wake: Alexa stopped speaking -> grace (${ALEXA_DIALOG_GRACE_MS}ms)")
+                wakeHandler.removeCallbacks(reclaimDebounce)
+                wakeHandler.postDelayed(reclaimDebounce, ALEXA_DIALOG_GRACE_MS)
+            }
+        }
+    }
+
+    private fun bringDashboardToFront() {
+        // Works on A9 too: falcon self-foregrounds a story/music card there, and without an
+        // explicit return the end of the turn strands the user on the Meta launcher (plus a
+        // long black transition) instead of the dashboard. A no-op when we're already front.
+        runCatching {
+            startActivity(Intent(this, DashboardActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                    or Intent.FLAG_ACTIVITY_NO_ANIMATION))
+        }
+        // The dashboard is now on top (behind the cover) — give it a moment to draw,
+        // then fade the frozen snapshot out to reveal the identical live dashboard.
+        wakeHandler.postDelayed({ hideWakeCover() }, 300L)
+    }
+
+    // A full-screen overlay laid ON TOP of everything (TYPE_APPLICATION_OVERLAY sits above
+    // all activities) to mask the ~400ms wake handoff. We put it up before bringing the
+    // assistant forward, so the assistant grabs the mic completely unseen; the assistant is
+    // still the top ACTIVITY underneath, so it still counts as foreground and gets the mic.
+    // Two styles (Prefs.wakeCoverStyle):
+    //   "whoosh"   — an orange gradient curtain slides down to cover, then slides off.
+    //   "snapshot" — a frozen dashboard image crossfades in and back out.
+    private var wakeCoverView: View? = null
+    private var wakeCoverStyle: String = "whoosh"
+
+    /**
+     * Put the cover up and invoke [onCovered] only once the screen is ACTUALLY covered
+     * (frame-commit for the snapshot, end-of-sweep for the whoosh) — launching the
+     * assistant any earlier lets a frame of it slip through a not-yet-drawn cover.
+     */
+    private fun showWakeCover(onCovered: Runnable) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || wakeCoverView != null) { onCovered.run(); return }
+        wakeCoverStyle = prefs?.wakeCoverStyle ?: "whoosh"
+        val once = java.util.concurrent.atomic.AtomicBoolean(false)
+        val fire = Runnable { if (once.compareAndSet(false, true)) onCovered.run() }
+        if (wakeCoverStyle == "snapshot") {
+            // PixelCopy reads back the composited GPU frame asynchronously (a few ms),
+            // then we cover with the pixel-perfect copy. The swap is made ATOMIC: the
+            // cover AND the replacement talk-button windows are staged INVISIBLE, then
+            // revealed in one main-thread pass → composited in the SAME frame. The screen
+            // goes {live dashboard + old buttons} → {frozen frame + new buttons} with no
+            // intermediate frame, so nothing can blink and no alpha ever stacks.
+            DashboardActivity.snapshot { snap ->
+                val shown = runCatching {
+                    if (wakeCoverView != null) { fire.run(); return@snapshot }
+                    val cover = android.widget.ImageView(this).apply {
+                        if (snap != null) {
+                            setImageBitmap(snap)
+                            scaleType = android.widget.ImageView.ScaleType.FIT_XY
+                        } else setBackgroundColor(0xFF1C1C1C.toInt())
+                        visibility = View.INVISIBLE   // revealed with the staged buttons
+                    }
+                    addCoverWindow(cover)
+                    val overlays = intercomOverlays.toList()
+                    val revealed = java.util.concurrent.atomic.AtomicBoolean(false)
+                    var remaining = overlays.size
+                    val reveal = Runnable {
+                        if (revealed.compareAndSet(false, true)) {
+                            cover.visibility = View.VISIBLE
+                            overlays.forEach { runCatching { it.completeRefloat() } }
+                            // Assistant may launch only once the covering frame is on
+                            // screen (frame-commit is API 29+; this path is Q-only).
+                            runCatching { cover.viewTreeObserver.registerFrameCommitCallback(fire) }
+                                .onFailure { wakeHandler.post(fire) }
+                            wakeHandler.postDelayed(fire, 150L)
+                        }
+                    }
+                    if (overlays.isEmpty()) reveal.run()
+                    else overlays.forEach { ov ->
+                        runCatching { ov.prepareRefloat(Runnable { if (--remaining <= 0) reveal.run() }) }
+                            .onFailure { if (--remaining <= 0) reveal.run() }
+                    }
+                    wakeHandler.postDelayed(reveal, 300L)   // cap: reveal even if staging stalls
+                }
+                if (shown.isFailure) {
+                    Log.w(TAG, "wake: cover failed: ${shown.exceptionOrNull()?.message}")
+                    fire.run()   // never block the handoff on cosmetics
+                }
+            }
+        } else {
+            val shown = runCatching {
+                val h = resources.displayMetrics.heightPixels.toFloat()
+                val cover = View(this).apply {
+                    background = android.graphics.drawable.GradientDrawable(
+                        android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
+                        intArrayOf(0xFFFF8A2B.toInt(), 0xFFFF5A00.toInt(), 0xFFCC3300.toInt()))
+                    translationY = -h   // starts off the top, sweeps down
+                }
+                addCoverWindow(cover)
+                // Stage replacement buttons above the curtain; flip them live once it
+                // fully covers (the old ones disappear behind it at the same moment).
+                intercomOverlays.forEach { runCatching { it.prepareRefloat(Runnable {}) } }
+                val landed = Runnable {
+                    intercomOverlays.forEach { runCatching { it.completeRefloat() } }
+                    fire.run()
+                }
+                cover.animate().translationY(0f).setDuration(170L)
+                    .setInterpolator(android.view.animation.DecelerateInterpolator())
+                    .withEndAction(landed).start()
+                wakeHandler.postDelayed(landed, 400L)   // fallback if the animator stalls
+            }
+            if (shown.isFailure) {
+                Log.w(TAG, "wake: cover failed: ${shown.exceptionOrNull()?.message}")
+                fire.run()
+            }
+        }
+    }
+
+    // Attach a cover view as the top overlay window, holding the display rotation while
+    // it's up (the assistant may request a different orientation — the display rotating
+    // under the cover would re-lay it out mid-handoff).
+    private fun addCoverWindow(cover: View) {
+        // TRANSLUCENT pixel format: the whoosh reveals the live dashboard around the
+        // curtain while it moves; the snapshot view itself is opaque edge to edge.
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or   // extend under the system bars
+                WindowManager.LayoutParams.FLAG_FULLSCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.screenOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED
+        // Immersive: keep the status/nav bars hidden while the cover is up, so the assistant's
+        // (non-immersive) activity coming up behind it doesn't flash a system bar at the edge.
+        @Suppress("DEPRECATION")
+        cover.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        getSystemService(WindowManager::class.java).addView(cover, lp)
+        wakeCoverView = cover
+        Log.i(TAG, "wake: cover shown (style=$wakeCoverStyle)")
+    }
+
+    private fun hideWakeCover() {
+        val cover = wakeCoverView ?: return
+        wakeCoverView = null
+        val remove = Runnable { runCatching { getSystemService(WindowManager::class.java).removeView(cover) } }
+        if (wakeCoverStyle == "snapshot") {
+            // Slightly slower fade back to live — softens the position-jump when the
+            // content underneath (e.g. an animated screensaver) moved during the freeze.
+            cover.animate().alpha(0f).setDuration(350L).withEndAction(remove).start()
+        } else {
+            // Continue the downward motion — the curtain slides off the bottom, revealing
+            // the (live) dashboard from the top down.
+            val h = resources.displayMetrics.heightPixels.toFloat()
+            cover.animate().translationY(h).setDuration(220L)
+                .setInterpolator(android.view.animation.AccelerateInterpolator()).withEndAction(remove).start()
+        }
     }
 
     private fun reclaimMicAfterWake(reason: String) {
         if (!micYieldedForWake) return
         micYieldedForWake = false
-        wakeHandler.removeCallbacks(reclaimPoll)
+        wakeHandler.removeCallbacks(reclaimTimeout)
+        wakeHandler.removeCallbacks(reclaimDebounce)
+        wakeRecordingCallback?.let { cb ->
+            runCatching { getSystemService(AudioManager::class.java)?.unregisterAudioRecordingCallback(cb) }
+            wakeRecordingCallback = null
+        }
+        wakePlaybackCallback?.let { cb ->
+            runCatching { getSystemService(AudioManager::class.java)?.unregisterAudioPlaybackCallback(cb) }
+            wakePlaybackCallback = null
+        }
+        wakeSpeakingSeen = false
         // Restart the warm mic whenever we normally hold it (not just wake mode) — the sound
         // sensor / enhanced presence need it too, and an assist-button handoff also yields it.
-        val coexist = prefs?.let { it.coexistVoiceAssistant && !it.wakeWordEnabled } ?: false
+        val coexist = prefs?.let { it.coexistVoiceAssistant && !it.wakeWordEnabled && !it.alexaWakeEnabled } ?: false
         if (!coexist && soundMonitor?.isRunning() == false) soundMonitor?.start()
         // The assistant may still be speaking its reply; ignore wake matches briefly so
         // its audio (echoed back through the mic) can't immediately re-trigger the handoff.
         wakeDetector?.pauseMatching(3_000L)
-        // On Android 10+ we brought the assistant to the front to capture; the conversation
-        // is over, so bring our dashboard back to the kiosk.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            runCatching {
-                startActivity(Intent(this, DashboardActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
-            }
-        }
-        Log.i(TAG, "wake: reclaimed mic ($reason)")
+        // Fallback: if we never handed focus back early (handoff never took, or timed out),
+        // make sure the dashboard is in front now.
+        // Return to the dashboard. bringDashboardToFront brings it on top BEHIND the cover and
+        // fades the cover out once it's drawn (no flash of the assistant). Alexa always lands
+        // here (held foreground till now). If we already returned early (Jarvis), just make
+        // sure no cover lingers.
+        alexaBar?.hide()   // drop the listening bar when the turn ends
+        // A9: falcon shows its own story/music card (no cover there) and may still be
+        // PLAYING when the turn machinery goes idle (music isn't held open). Leave the
+        // card up while its audio runs — "alexa, play music" keeps the nice display —
+        // but once falcon is silent, restore our dashboard explicitly, or the ended turn
+        // strands the user on the Meta launcher + a long black gap.
+        val leaveFalconUp = wakeIsAlexa && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            falconPlaying()
+        if (leaveFalconUp) Log.i(TAG, "wake: falcon still playing (A9) -> leaving its screen up")
+        if (!wakeFocusReturned && !leaveFalconUp) bringDashboardToFront() else hideWakeCover()
+        wakeFocusReturned = false
+        wakeIsAlexa = false
+        Log.i(TAG, "wake: reclaimed mic ($reason, ${System.currentTimeMillis() - wakeYieldStartMs}ms total)")
     }
 
-    // Start/stop the wake detector to match the pref (live, from the apply path). Wake
-    // needs our mic, so it ensures SoundMonitor is running (coexist is off when wake is
-    // on — they're mutually exclusive). Idempotent via the isRunning() guards.
+    // The recognizer grammar is fixed at creation, so any change to the ENABLED phrases needs
+    // a fresh recognizer. This signature captures both routes (empty = that route disabled).
+    private fun wakeSig(p: Prefs) =
+        "${if (p.wakeWordEnabled) p.wakePhrase else ""}|${if (p.alexaWakeEnabled) p.alexaWakePhrase else ""}"
+
+    // Start/stop the wake detector to match the prefs (live, from the apply path). Runs when
+    // EITHER the Jarvis wake word OR Alexa support is on; each route is fed its own phrase
+    // ("" = disabled). Wake needs our warm mic, so it ensures SoundMonitor is running.
     private fun reconcileWake(p: Prefs) {
-        val phraseChanged = startedWakePhrase != null && startedWakePhrase != p.wakePhrase
-        wakeDetector?.phrase = p.wakePhrase
-        if (p.wakeWordEnabled) {
+        val want = p.wakeWordEnabled || p.alexaWakeEnabled
+        val sig = wakeSig(p)
+        val sigChanged = startedWakePhrase != null && startedWakePhrase != sig
+        wakeDetector?.phrase = if (p.wakeWordEnabled) p.wakePhrase else ""
+        wakeDetector?.alexaPhrase = if (p.alexaWakeEnabled) p.alexaWakePhrase else ""
+        if (want) {
             if (soundMonitor?.isRunning() == false) soundMonitor?.start()
             if (wakeDetector?.isRunning() == false) {
-                wakeDetector?.start(); startedWakePhrase = p.wakePhrase
-            } else if (phraseChanged) {
-                // The grammar is fixed when the recognizer is created, so a new phrase
-                // needs a fresh recognizer. Stop now and restart after a short gap so the
-                // old decode thread has exited (it polls on a 200 ms timeout) before the
-                // new one starts — otherwise the two race on the running flag.
+                wakeDetector?.start(); startedWakePhrase = sig
+            } else if (sigChanged) {
+                // New enabled-phrase set → rebuild the recognizer. Stop now and restart after a
+                // short gap so the old decode thread exits (200 ms poll) before the new starts.
                 wakeDetector?.stop()
-                startedWakePhrase = p.wakePhrase
+                startedWakePhrase = sig
                 wakeHandler.postDelayed({
-                    if (prefs?.wakeWordEnabled == true) wakeDetector?.start()
+                    if (prefs?.let { it.wakeWordEnabled || it.alexaWakeEnabled } == true) wakeDetector?.start()
                 }, 400L)
             }
         } else if (wakeDetector?.isRunning() == true) {
             wakeDetector?.stop()
             startedWakePhrase = null
         }
+
+        // Watch falcon's connection state only while Alexa support is on — so the handoff can
+        // gate on it (skip + inform the user while falcon is still reconnecting after a boot).
+        if (p.alexaWakeEnabled) {
+            if (falconReadiness == null) falconReadiness = FalconReadiness().also { it.start() }
+            scheduleFalconWarmup()
+        } else {
+            falconReadiness?.stop(); falconReadiness = null
+        }
+    }
+
+    // FALCON WARM-UP: the first LISTEN after our app restarts lands on a falcon whose voice
+    // session has gone stale — it aborts within ~300ms and speaks "something went wrong",
+    // then takes a few kicked turns to fully recover (measured 2026-07-07: ReadyState only
+    // ~45s after the first attempt; a 19-min idle WITHOUT our restart was fine, so it's our
+    // restart that staleness follows). The provisioner revives a stale falcon by simply
+    // LAUNCHING its activity, so do one silent kick shortly after start: falcon foreground
+    // behind the cover for a moment — no LISTEN, so no beep and no mic involvement — then
+    // back to the dashboard. The user's first real "alexa" then lands on a warm falcon.
+    @Volatile private var falconWarmupDone = false
+
+    private fun scheduleFalconWarmup() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        if (falconWarmupDone) return
+        falconWarmupDone = true
+        Log.i(TAG, "wake: falcon warm-up scheduled in ${FALCON_WARMUP_DELAY_MS}ms")
+        val posted = wakeHandler.postDelayed({ runFalconWarmup() }, FALCON_WARMUP_DELAY_MS)
+        if (!posted) Log.w(TAG, "wake: falcon warm-up post FAILED")
+    }
+
+    private fun runFalconWarmup() {
+        Log.i(TAG, "wake: falcon warm-up fired (alexa=${prefs?.alexaWakeEnabled} yielded=$micYieldedForWake)")
+        if (prefs?.alexaWakeEnabled != true) return
+        if (micYieldedForWake) return   // a real turn is in flight — it warms falcon itself
+        Log.i(TAG, "wake: falcon warm-up kick (foreground behind cover, no LISTEN)")
+        showWakeCover(Runnable {
+            runCatching {
+                startActivity(Intent()
+                    .setClassName("com.amazon.alexa.multimodal.falcon",
+                        "com.amazon.alexa.multimodal.falcon.SIMActivity")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION))
+            }.onFailure { Log.w(TAG, "wake: falcon warm-up launch failed: ${it.message}") }
+            wakeHandler.postDelayed({
+                // If a real wake started mid-warm-up, its flow owns the screen now.
+                if (!micYieldedForWake) bringDashboardToFront()
+            }, FALCON_WARMUP_HOLD_MS)
+        })
     }
 
     // Combined presence = Meta face detection OR (when enhanced) recent ambient
@@ -1445,7 +2184,10 @@ class BridgeService : Service() {
     // hide them — they don't float over other apps / the home screen.
     private fun reconcileIntercomOverlays() {
         val p = prefs ?: return
-        val show = p.intercomOverlayEnabled && intercom?.canTransmit() == true && dashboardForeground
+        // The wake-handoff cover counts as "dashboard in front": the buttons float above
+        // the cover for the whole handoff, so hiding them here would blink them out.
+        val show = p.intercomOverlayEnabled && intercom?.canTransmit() == true &&
+            (dashboardForeground || wakeCoverView != null)
         if (!show) { hideIntercomOverlays(); return }
 
         // Seed a default "Talk → Everyone" button only on first-ever use — NOT after the
