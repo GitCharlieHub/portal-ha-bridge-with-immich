@@ -4,11 +4,28 @@ All notable changes to Portal HA Bridge. Versions are the app `versionName`;
 the in-app updater (Settings → *Check for Updates*) and the provisioner both pull
 the latest GitHub release.
 
+## v1.17.1 — Alexa provisioning on macOS/Linux
+
+**Added**
+- **`./provision.sh --alexa`** — the macOS/Linux provisioner now does the full
+  one-command Alexa setup (download + SHA-verify + install + grants +
+  amazon.com/code sign-in + kick-until-connected), matching the Windows
+  script's `-Alexa`. It verifies the falcon install and fails loudly rather
+  than pretending.
+
+**Fixed**
+- In-app provisioning messages show both the Windows and macOS/Linux commands.
+- Provisioner (`provision.sh`): a failed platform-tools bootstrap now stops the
+  script instead of continuing with a broken adb path.
+- Otherwise identical to v1.17.0; the bump also ensures devices running
+  pre-release 1.17.0 builds are offered the final update.
+
 ## v1.17.0 — Alexa on your Portal + YouTube casting
 
 **Added**
 - **Alexa on your Portal — including Android 10.** With the stock Alexa client
-  provisioned (one-time `provision.ps1 -Alexa` over USB — see the README), the
+  provisioned (one-time `provision.ps1 -Alexa` / `./provision.sh --alexa` over
+  USB — see the README), the
   app's own on-device wake word hands the mic to **real Amazon Alexa**. This
   works on **Android 10 Portals**, where the stock "Hey Alexa" wake app is deaf
   (Android silences background mic capture; the bridge brings Alexa forward
@@ -49,10 +66,11 @@ the latest GitHub release.
   short between turns, and **camera feeds no longer reload after a wake** (the
   dashboard WebView stays "visible" to Home Assistant throughout).
 - **Provisioner: one-command Alexa setup + auto-update.** `provision.ps1 -Alexa`
-  downloads and verifies the Alexa client, installs and grants it, opens the
-  code sign-in (enter it at amazon.com/code — UK accounts work), and relaunches
-  it until connected. The provisioner also now **auto-updates the app** whenever
-  your local build is newer than what's installed.
+  (Windows) or `./provision.sh --alexa` (macOS/Linux) downloads and verifies the
+  Alexa client, installs and grants it, opens the code sign-in (enter it at
+  amazon.com/code — UK accounts work), and relaunches it until connected. The
+  Windows script also now **auto-updates the app** whenever your local build is
+  newer than what's installed.
 - **YouTube casting.** The Portal now shows up in the **cast menu of the YouTube
   app** on any phone on your Wi-Fi (Android and iPhone) under its device name —
   exactly like a smart TV. Tap it and the Portal switches from the dashboard to

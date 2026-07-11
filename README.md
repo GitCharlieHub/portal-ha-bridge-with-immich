@@ -78,6 +78,7 @@ Both do the same thing — **nothing needs to be pre-installed**. The script dow
 | `-SetLauncher` / `--set-launcher` | also set the immortal launcher as the kiosk home |
 | `-FreeAlohaMic` / `--free-mic` | free a 1st-gen Portal+ mic for **two-way intercom** (disables Meta's "Hey Alexa" detector; reversible) |
 | `-RestoreAlohaMic` / `--restore-mic` | undo `--free-mic` (re-enable "Hey Alexa") |
+| `-Alexa` / `--alexa` | provision **Amazon Alexa** (install + grant + amazon.com/code sign-in) — see [Alexa on your Portal](#alexa-on-your-portal) |
 | `-Serial <id>` / `--serial <id>` | target a specific device when several are attached |
 
 > Prefer to build it yourself? See [Building from source](#building-from-source) — the provisioner automatically uses your build output if it finds one.
@@ -154,7 +155,7 @@ Talk between Portals on your network — hold a button, speak, and it plays out 
 
 **Receive-only Portals.** A Portal can *send* only if a sideloaded app can get real-time microphone audio. On **Portal+** models, Meta's own always-on far-field mic / "Hey Alexa" detector can hold the microphone and throttle third-party capture, so an affected Portal is **receive-only** — it hears announcements but can't send them. The app measures this automatically at startup and shows a note in **Settings → Intercom**; receive-only Portals simply disable their send controls.
 
-> **Reclaim two-way on a Portal+:** run the provisioner with `--free-mic` (`-FreeAlohaMic`) — or simply provision Alexa (`-Alexa`), which does it automatically (the bridge's own wake word replaces Meta's detector). Either way it disables `com.millennium`, freeing the mic for transmit **without touching face-presence or Smart-Camera framing** — two-way confirmed working on a 1st-gen Portal+. Reversible with `--restore-mic`.
+> **Reclaim two-way on a Portal+:** run the provisioner with `--free-mic` (`-FreeAlohaMic`) — or simply provision Alexa (`--alexa` / `-Alexa`), which does it automatically (the bridge's own wake word replaces Meta's detector). Either way it disables `com.millennium`, freeing the mic for transmit **without touching face-presence or Smart-Camera framing** — two-way confirmed working on a 1st-gen Portal+. Reversible with `--restore-mic`.
 
 > Uses `RECORD_AUDIO` for the mic and (for the floating buttons) `SYSTEM_ALERT_WINDOW` — both already granted by the provisioner.
 
@@ -209,11 +210,15 @@ The bridge can put **real Amazon Alexa** back on a Portal — **including Androi
 
 **One-time setup (per Portal, over USB):**
 
-1. Run the provisioner with the Alexa flag:
+1. Run the provisioner with the Alexa flag — Windows:
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\provision.ps1 -Alexa
    ```
-   It downloads and SHA-verifies the stock Alexa client, installs it, grants its permissions, and opens the sign-in screen on the Portal.
+   macOS / Linux:
+   ```bash
+   ./provision.sh --alexa
+   ```
+   Either downloads and SHA-verifies the stock Alexa client, installs it, grants its permissions, and opens the sign-in screen on the Portal.
 2. The Portal shows a code — enter it at **amazon.com/code** (any Amazon account region works, including .co.uk). The provisioner then relaunches the client until it connects (a few minutes; keep the cable in).
 3. On the Portal: enable **Alexa support** in **Settings → Display & Presence**. The wake phrase is editable — the default bare **"alexa"** is the most reliable.
 
@@ -260,7 +265,7 @@ Plus an on-device idle timer (**Screen Timeout** / **…Minutes**) that sleeps t
 - **Camera aspect ratio** differs by Portal+ generation — `aloha` streams square (1:1, no config), `cipher` streams 480×640 and needs the one-line 4:3 SAR filter in the HA card. See [Portal+ camera aspect ratio](#portal-camera-aspect-ratio).
 - **Camera orientation**: both Portal+ models have a **fixed camera** (it doesn't pivot with the screen), so accelerometer auto-rotate is disabled for them and the stream uses a fixed rotation — upright out of the box (`aloha` rot 0, `cipher` rot 90), adjustable with the in-app **Rotate** button. Auto-rotate still applies to non-Portal+ models.
 - **Portal+ 2nd gen (`cipher`)**: its accelerometer is mounted on the **moving screen arm**, which heavily dampens taps — so the tap threshold is auto-scaled, the gesture is relabelled **"Tilt"**, and its dominant (Z) axis reports **up/down** instead of front/back. All automatic — no config.
-- **Intercom**: **every model can be two-way.** Out of the box a **Portal+** has Meta's "Hey Alexa" detector holding the far-field mic, which makes it receive-only — the provisioner frees it (`--free-mic`), and **provisioning Alexa (`-Alexa`) frees it automatically** (the bridge supplies its own wake word instead). Capability is measured automatically at startup either way — see [Intercom](#intercom-portal-to-portal-announce).
+- **Intercom**: **every model can be two-way.** Out of the box a **Portal+** has Meta's "Hey Alexa" detector holding the far-field mic, which makes it receive-only — the provisioner frees it (`--free-mic`), and **provisioning Alexa (`--alexa` / `-Alexa`) frees it automatically** (the bridge supplies its own wake word instead). Capability is measured automatically at startup either way — see [Intercom](#intercom-portal-to-portal-announce).
 
 ---
 

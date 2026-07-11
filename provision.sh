@@ -22,6 +22,7 @@
 #     ./provision.sh --set-launcher        # also set immortal as the default home launcher
 #     ./provision.sh --free-mic            # free the mic for 2-way intercom (disables Meta's "Hey Alexa")
 #     ./provision.sh --restore-mic         # undo --free-mic (re-enable "Hey Alexa")
+#     ./provision.sh --alexa               # also revive Amazon Alexa (falcon) + link via amazon.com/code (A9 & A10)
 #
 # The APK is resolved from, in order: --apk; the build output
 # (app/build/outputs/apk/release/app-release.apk); a portal-ha-bridge.apk /
@@ -39,16 +40,17 @@ else
   C_CYAN=""; C_GREEN=""; C_RED=""; C_YEL=""; C_GREY=""; C_OFF=""
 fi
 
-SERIAL=""; APK=""; FORCE_INSTALL=0; SET_LAUNCHER=0; FREE_MIC=0; RESTORE_MIC=0
+SERIAL=""; APK=""; FORCE_INSTALL=0; SET_LAUNCHER=0; FREE_MIC=0; RESTORE_MIC=0; ALEXA=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --install)      FORCE_INSTALL=1 ;;
     --set-launcher) SET_LAUNCHER=1 ;;
     --free-mic)     FREE_MIC=1 ;;
     --restore-mic)  RESTORE_MIC=1 ;;
+    --alexa)        ALEXA=1 ;;
     --serial)       SERIAL="$2"; shift ;;
     --apk)          APK="$2"; shift ;;
-    -h|--help)      sed -n '3,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)      sed -n '3,31p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)              printf "%sUnknown argument: %s%s\n" "$C_RED" "$1" "$C_OFF"; exit 1 ;;
   esac
   shift
@@ -66,7 +68,7 @@ resolve_adb() {
   case "$(uname -s)" in
     Darwin) url="https://dl.google.com/android/repository/platform-tools-latest-darwin.zip" ;;
     Linux)  url="https://dl.google.com/android/repository/platform-tools-latest-linux.zip" ;;
-    *) printf "%sUnsupported OS $(uname -s); install platform-tools manually.%s\n" "$C_RED" "$C_OFF" >&2; exit 1 ;;
+    *) printf "%sUnsupported OS %s; install platform-tools manually.%s\n" "$C_RED" "$(uname -s)" "$C_OFF" >&2; exit 1 ;;
   esac
   printf "%sadb not found - downloading Android platform-tools (one-time, ~8 MB)...%s\n" "$C_YEL" "$C_OFF" >&2
   zip="${TMPDIR:-/tmp}/platform-tools.zip"
@@ -82,7 +84,8 @@ resolve_adb() {
   printf "%splatform-tools download did not contain adb.%s\n" "$C_RED" "$C_OFF" >&2
   exit 1
 }
-ADB="$(resolve_adb)"
+ADB="$(resolve_adb)" || exit 1
+[ -n "$ADB" ] || exit 1
 
 # adb wrapper that injects -s SERIAL when given
 adb_cmd() {
@@ -91,6 +94,12 @@ adb_cmd() {
 
 is_installed() {
   adb_cmd shell pm list packages "$PKG" 2>/dev/null | tr -d '\r' | grep -qx "package:$PKG"
+}
+
+# sha256 of a file — macOS ships shasum, Linux sha256sum.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+  else shasum -a 256 "$1" | awk '{print $1}'; fi
 }
 
 printf "%sProvisioning %s%s\n" "$C_CYAN" "$PKG" "$C_OFF"
@@ -217,6 +226,89 @@ if [ "$FREE_MIC" -eq 1 ]; then
   else
     printf "  %-22s %sOK (mic freed)%s\n" "TwoWayMic" "$C_GREEN" "$C_OFF"
   fi
+fi
+
+# ── Amazon Alexa (falcon) - optional (--alexa) ───────────────────────────────
+# Revives the stock Meta Alexa client and links it via Code-Based Linking (which
+# stores its own token, bypassing the Portal's broken keystore). Works on A9 AND
+# A10 - the bridge's own wake-word detector drives it (millennium can't: on A10
+# a background recorder is mic-silenced). After this, enable "Alexa support" in
+# the app's Display & Presence settings. Reverse: adb uninstall com.amazon.alexa.multimodal.falcon
+if [ "$ALEXA" -eq 1 ]; then
+  printf "\n%sProvisioning Amazon Alexa (falcon)...%s\n" "$C_CYAN" "$C_OFF"
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    printf "%s  need sha256sum or shasum on PATH to verify falcon.apk - install coreutils/perl and re-run%s\n" "$C_RED" "$C_OFF"
+    exit 1
+  fi
+  FALCON="com.amazon.alexa.multimodal.falcon"
+  FALCON_URL="https://github.com/starbrightlab/hey-dist/releases/download/v0.1.0/falcon.apk"
+  FALCON_SHA="76133f807e492e46aaf58e6ae503e623a93af840eaa3eccfb8630f1ecab3268d"
+  FALCON_APK="$SCRIPT_DIR/falcon.apk"
+
+  # Download + verify once, cached next to the script (skip the 115 MB re-download).
+  have_falcon=0
+  if [ -f "$FALCON_APK" ] && [ "$(sha256_of "$FALCON_APK")" = "$FALCON_SHA" ]; then have_falcon=1; fi
+  if [ "$have_falcon" -eq 0 ]; then
+    printf "%s  downloading falcon (~115 MB)...%s\n" "$C_YEL" "$C_OFF"
+    if ! curl -fSL -o "$FALCON_APK" "$FALCON_URL"; then
+      printf "%s  falcon download failed%s\n" "$C_RED" "$C_OFF"; exit 1
+    fi
+    if [ "$(sha256_of "$FALCON_APK")" != "$FALCON_SHA" ]; then
+      printf "%s  falcon checksum mismatch - delete falcon.apk and retry%s\n" "$C_RED" "$C_OFF"; exit 1
+    fi
+  fi
+  printf "%s  falcon.apk verified%s\n" "$C_GREEN" "$C_OFF"
+
+  # dee.app (the dead standard Alexa app) shares a permission with falcon and blocks its install.
+  if adb_cmd shell pm list packages com.amazon.dee.app 2>/dev/null | tr -d '\r' | grep -q "com.amazon.dee.app"; then
+    adb_cmd uninstall com.amazon.dee.app >/dev/null 2>&1
+    printf "%s  removed conflicting com.amazon.dee.app%s\n" "$C_GREEN" "$C_OFF"
+  fi
+  adb_cmd install -r "$FALCON_APK" >/dev/null
+  if ! adb_cmd shell pm list packages "$FALCON" 2>/dev/null | tr -d '\r' | grep -q "$FALCON"; then
+    printf "%s  falcon install failed - see the adb output above (free up storage and retry?)%s\n" "$C_RED" "$C_OFF"
+    exit 1
+  fi
+  printf "%s  falcon installed%s\n" "$C_GREEN" "$C_OFF"
+
+  # Grants + settings so falcon can run and capture.
+  for perm in READ_PHONE_STATE INTERACT_ACROSS_USERS RECORD_AUDIO; do
+    adb_cmd shell pm grant "$FALCON" "android.permission.$perm" >/dev/null 2>&1
+  done
+  adb_cmd shell appops set "$FALCON" SYSTEM_ALERT_WINDOW allow >/dev/null 2>&1
+  adb_cmd shell settings put secure user_setup_complete 1 >/dev/null 2>&1
+  adb_cmd shell settings put global hidden_api_policy 1 >/dev/null 2>&1
+  printf "%s  granted falcon perms%s\n" "$C_GREEN" "$C_OFF"
+
+  # The bridge drives Alexa with its OWN wake word, so millennium isn't needed - disable if present.
+  if [ "$HAS_MILLENNIUM" -eq 1 ]; then
+    adb_cmd shell pm disable-user --user 0 "$MILLENNIUM" >/dev/null 2>&1
+  fi
+
+  # Code-Based Linking: launch falcon so the sign-in code shows on the Portal.
+  adb_cmd shell am start -n "$FALCON/com.amazon.alexa.multimodal.LaunchActivity" >/dev/null 2>&1
+  printf "\n%s  >>> SIGN IN: a code is on the Portal screen. Go to https://amazon.com/code and enter it. <<<%s\n" "$C_YEL" "$C_OFF"
+  printf "%s      Do it now - connecting can take a few minutes (esp. on Android 10).%s\n" "$C_GREY" "$C_OFF"
+
+  # Kick loop: relaunch falcon until its Speech Interaction Manager reaches ReadyState.
+  ready=0
+  i=0
+  while [ "$i" -lt 18 ]; do
+    sleep 30
+    if adb_cmd logcat -t 300 -s SPCH-SIM_SimStateMachine:I 2>/dev/null | grep -q "in ReadyState"; then ready=1; break; fi
+    adb_cmd shell am force-stop "$FALCON" >/dev/null 2>&1
+    adb_cmd shell am start -n "$FALCON/com.amazon.alexa.multimodal.LaunchActivity" >/dev/null 2>&1
+    i=$((i + 1))
+    printf "%s  ...still connecting (%ss)%s\n" "$C_GREY" "$((i * 30))" "$C_OFF"
+  done
+  if [ "$ready" -eq 1 ]; then
+    printf "%s  [ok] Alexa connected (ReadyState)%s\n" "$C_GREEN" "$C_OFF"
+    printf "%s      Enable 'Alexa support' in the app (Display & Presence), then say your Alexa wake word.%s\n" "$C_CYAN" "$C_OFF"
+  else
+    printf "%s  Alexa not connected within the window. Finish the amazon.com/code sign-in - it connects on its own; re-run --alexa to re-check.%s\n" "$C_YEL" "$C_OFF"
+  fi
+  # Return the Portal to the bridge dashboard (falcon was left foreground for sign-in).
+  adb_cmd shell am start -n "$PKG/.DashboardActivity" >/dev/null 2>&1
 fi
 
 printf "\n%sDone.%s\n" "$C_CYAN" "$C_OFF"

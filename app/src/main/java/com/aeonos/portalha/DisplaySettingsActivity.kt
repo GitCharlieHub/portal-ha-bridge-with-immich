@@ -226,7 +226,8 @@ class DisplaySettingsActivity : AppCompatActivity() {
             .setMessage("Alexa support needs Amazon's Alexa client on this Portal. App " +
                 "updates can't install it — its permissions can only be granted over USB.\n\n" +
                 "One-time setup: connect a USB cable to a computer and run\n\n" +
-                "    provision.ps1 -Alexa\n\n" +
+                "    provision.ps1 -Alexa    (Windows)\n" +
+                "    ./provision.sh --alexa  (macOS/Linux)\n\n" +
                 "then enter the code the Portal shows at amazon.com/code. Full steps are in " +
                 "the README under “Alexa on your Portal”.\n\n" +
                 "Once that's done, come back and turn this on.")

@@ -220,7 +220,9 @@ class MainActivity : AppCompatActivity() {
             .setMessage("This version can put real Amazon Alexa on this Portal — wake word, " +
                 "stories, music, “alexa stop”.\n\n" +
                 "It needs a ONE-TIME setup over USB (app updates can't do it): connect a " +
-                "cable to a computer and run\n\n    provision.ps1 -Alexa\n\n" +
+                "cable to a computer and run\n\n" +
+                "    provision.ps1 -Alexa    (Windows)\n" +
+                "    ./provision.sh --alexa  (macOS/Linux)\n\n" +
                 "then enter the code shown at amazon.com/code, and enable Alexa support in " +
                 "Settings → Display & Presence. Full steps: README, “Alexa on your " +
                 "Portal”. Until then the Alexa features stay off — everything else works " +
