@@ -267,6 +267,10 @@ class Intercom(
         publish(TWOWAY_TOPIC, "$deviceId|${System.currentTimeMillis()}".toByteArray(), 1, true)
     fun closeTwoWayChannel() = publish(TWOWAY_TOPIC, ByteArray(0), 1, true)
 
+    // When true, incoming announcements are dropped instead of played — set by the
+    // service while this Portal is on a live Meta call (don't talk over the call).
+    @Volatile var suppressPlayback: () -> Boolean = { false }
+
     private fun handleAudio(topic: String, payload: ByteArray) {
         // topic tail = "<sender>/<target>"
         val rest = topic.removePrefix(AUDIO_PREFIX)
@@ -277,6 +281,7 @@ class Intercom(
         if (sender == deviceId) return                       // ignore our own frames
         if (target != "all" && target != deviceId) return    // not addressed to us
         if (payload.isEmpty()) return
+        if (suppressPlayback()) return                       // in a call — stay quiet
         ensurePlaybackThread()
         // Keep latency low: if frames back up (a burst, or playback briefly behind),
         // drop the oldest so we don't drift further and further behind the speaker.

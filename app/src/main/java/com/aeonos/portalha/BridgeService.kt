@@ -342,6 +342,7 @@ class BridgeService : Service() {
                 }
                 it.onReceiveEnd = { if (!twoWayChannelOpen) ro.hide() }
                 it.onTwoWayChannel = { open, _ -> onTwoWayChannelChanged(open) }
+                it.suppressPlayback = { inCall }   // never talk over a live Meta call
             }
         // On-device "hey jarvis": fed the warm mic, fires the assistant wake handoff.
         // "<phrase> announce" instead triggers a hands-free intercom broadcast.
@@ -401,6 +402,11 @@ class BridgeService : Service() {
             friendlyName = { prefs?.deviceName ?: "Portal" },
             onLaunch = { query ->
                 Handler(Looper.getMainLooper()).post {
+                    if (inCall) {
+                        // Don't punt a live call into PiP for a YouTube cast.
+                        Log.i(TAG, "cast: launch refused — Portal is on a call")
+                        return@post
+                    }
                     ScreenControl.wake(this)                       // cast-to-wake
                     lastActivityMs = System.currentTimeMillis()
                     runCatching { TvAppActivity.launch(this, query) }
@@ -409,6 +415,8 @@ class BridgeService : Service() {
             },
             onStopApp = { TvAppActivity.close() }
         ).also { it.start() }
+
+        startCallWatch()
 
         screenOn = getSystemService(PowerManager::class.java).isInteractive
         lastActivityMs = System.currentTimeMillis()
@@ -542,6 +550,10 @@ class BridgeService : Service() {
             runCatching { getSystemService(AudioManager::class.java)?.unregisterAudioPlaybackCallback(cb) }
             wakePlaybackCallback = null
         }
+        callWatchCallback?.let { cb ->
+            runCatching { getSystemService(AudioManager::class.java)?.unregisterAudioPlaybackCallback(cb) }
+            callWatchCallback = null
+        }
         intercom?.release()
         hideIntercomOverlays()
         instance = null
@@ -605,6 +617,7 @@ class BridgeService : Service() {
     // SYSTEM_ALERT_WINDOW permission exempts this from background-start limits.
     // DashboardActivity is singleTask, so this reuses the existing instance.
     private fun reclaimForeground() {
+        if (inCall) return   // never shove the dashboard over a live call (it would PiP it)
         runCatching {
             startActivity(Intent(this, DashboardActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
@@ -758,6 +771,7 @@ class BridgeService : Service() {
             HaDiscovery.volumeCommandTopic(p.deviceId),
             HaDiscovery.volumeMuteCommandTopic(p.deviceId),
             HaDiscovery.soundCommandTopic(p.deviceId),
+            HaDiscovery.showDashboardCommandTopic(p.deviceId),
             HaDiscovery.brightnessCommandTopic(p.deviceId),
             if (p.cameraServiceEnabled) HaDiscovery.cameraCommandTopic(p.deviceId) else null,
             // motion can be enabled live by the camera-ON cascade, so subscribe
@@ -781,6 +795,10 @@ class BridgeService : Service() {
 
         // Discovery
         publishDiscovery(client, p)
+
+        // In-call state is event-driven (audio playback callback); publish the
+        // current value so HA has it from the first connect.
+        publishRaw(HaDiscovery.inCallStateTopic(p.deviceId), if (inCall) "ON" else "OFF", 1, retained = true)
 
         // Initial states
         val pm = getSystemService(PowerManager::class.java)
@@ -860,6 +878,8 @@ class BridgeService : Service() {
         pub(HaDiscovery.volumeMuteDiscoveryTopic(p.deviceId), HaDiscovery.volumeMuteConfigPayload(p.deviceId, p.deviceName))
         pub(HaDiscovery.doorbellDiscoveryTopic(p.deviceId), HaDiscovery.doorbellConfigPayload(p.deviceId, p.deviceName))
         pub(HaDiscovery.alertDiscoveryTopic(p.deviceId), HaDiscovery.alertConfigPayload(p.deviceId, p.deviceName))
+        pub(HaDiscovery.inCallDiscoveryTopic(p.deviceId), HaDiscovery.inCallConfigPayload(p.deviceId, p.deviceName))
+        pub(HaDiscovery.showDashboardDiscoveryTopic(p.deviceId), HaDiscovery.showDashboardConfigPayload(p.deviceId, p.deviceName))
         pub(HaDiscovery.brightnessDiscoveryTopic(p.deviceId), HaDiscovery.brightnessConfigPayload(p.deviceId, p.deviceName))
         // HA long-lived token, settable from HA (for the Jarvis tool-provider's smart-home control).
         pub(HaDiscovery.haTokenDiscoveryTopic(p.deviceId), HaDiscovery.haTokenConfigPayload(p.deviceId, p.deviceName))
@@ -935,6 +955,7 @@ class BridgeService : Service() {
             HaDiscovery.volumeCommandTopic(p.deviceId)            -> handleVolumeCommand(payload, p)
             HaDiscovery.volumeMuteCommandTopic(p.deviceId)        -> handleVolumeMuteCommand(payload, p)
             HaDiscovery.soundCommandTopic(p.deviceId)             -> TonePlayer.play(payload)
+            HaDiscovery.showDashboardCommandTopic(p.deviceId)     -> if (payload == "show") showDashboard()
             HaDiscovery.brightnessCommandTopic(p.deviceId)        -> handleBrightnessCommand(payload, p)
             HaDiscovery.cameraCommandTopic(p.deviceId)            -> handleCameraCommand(payload, p)
             HaDiscovery.motionSensitivityCommandTopic(p.deviceId) -> handleMotionSensitivityCommand(payload, p)
@@ -1281,6 +1302,13 @@ class BridgeService : Service() {
             if (open == twoWayChannelOpen) return@post
             twoWayChannelOpen = open
             if (open) {
+                if (inCall) {
+                    // NEVER arm the 2-way mic during a live Meta call — VOX would pick up
+                    // the call conversation and broadcast it to every other Portal.
+                    Log.i(TAG, "2way: channel opened while in a call — not arming on this Portal")
+                    twoWayChannelOpen = false
+                    return@post
+                }
                 lastTwoWayActivityMs = System.currentTimeMillis()
                 receiveOrb?.hide()          // the announce orb hands off to the 2-way orb
                 soundMonitor?.stop()
@@ -1323,6 +1351,10 @@ class BridgeService : Service() {
             Log.i(TAG, "announce: wake during a yielded turn — ignored")
             return
         }
+        if (inCall) {
+            Log.i(TAG, "announce: wake during a live call — ignored")
+            return
+        }
         val p = prefs ?: return
         if (!p.voiceAnnounceEnabled) { Log.i(TAG, "announce: disabled in settings"); return }
         wakeDetector?.pauseMatching(36_000L)
@@ -1335,6 +1367,10 @@ class BridgeService : Service() {
         // handoff (or the assist button) on top of a live Alexa conversation.
         if (micYieldedForWake) {
             Log.i(TAG, "wake: Jarvis/assist wake during a yielded turn — ignored")
+            return
+        }
+        if (inCall) {
+            Log.i(TAG, "wake: Jarvis/assist wake during a live call — ignored")
             return
         }
         val p = prefs ?: return
@@ -1420,6 +1456,7 @@ class BridgeService : Service() {
             Log.i(TAG, "wake: 'alexa stop' -> pausing falcon playback (media key)")
             dispatchMediaPause()
             wakeHandler.postDelayed({
+                if (inCall) return@postDelayed   // a call connected meanwhile — leave it be
                 if (falconPlaying()) {
                     // The key didn't take (e.g. a timer alarm, or key routing lost) —
                     // fall back to a normal listen so the user can repeat the command.
@@ -1448,6 +1485,15 @@ class BridgeService : Service() {
     }
 
     private fun fireAlexaHandoff() {
+        // A live Meta call owns the screen and the mic: foregrounding falcon would punt
+        // the call into picture-in-picture and the capture would fail anyway.
+        if (inCall) {
+            Log.i(TAG, "wake: 'alexa' during a live call — ignored")
+            wakeHandler.post {
+                runCatching { Toast.makeText(this, "In a call — Alexa is unavailable", Toast.LENGTH_SHORT).show() }
+            }
+            return
+        }
         // Barge-in: the wake word matched while a held Alexa turn is mid-speech (our mic
         // runs during her speaking phase — see startBargeListen). Falcon is already
         // foreground behind the cover, so no yield/cover dance: free the mic slot, then
@@ -1744,6 +1790,76 @@ class BridgeService : Service() {
         }
     }
 
+    // ── In-call awareness ─────────────────────────────────────────────────────
+    // A live Meta call (Messenger/WhatsApp) plays its far-end audio tagged
+    // USAGE_VOICE_COMMUNICATION — the one reliable signal on Portals (the system
+    // audio mode stays NORMAL throughout a call, so it can't be used). Our own
+    // audio never carries that usage (intercom playback is MEDIA), but exclude our
+    // uid anyway via the same reflection used by falconPlaying(). Published to HA
+    // as the "In Call" binary_sensor and consulted by the wake/announce/cast/
+    // warm-up guards: a foreground grab during a call floats the call into
+    // picture-in-picture (harmless but rude), and the call owns the mic anyway.
+    @Volatile private var inCall = false
+    private var callWatchCallback: AudioManager.AudioPlaybackCallback? = null
+
+    private fun computeInCall(): Boolean {
+        val am = getSystemService(AudioManager::class.java) ?: return false
+        val configs = runCatching { am.activePlaybackConfigurations }.getOrDefault(emptyList())
+        val myUid = android.os.Process.myUid()
+        return configs.any { cfg ->
+            cfg.audioAttributes.usage == AudioAttributes.USAGE_VOICE_COMMUNICATION &&
+                (playbackClientUidMethod?.let { m ->
+                    runCatching { m.invoke(cfg) as? Int }.getOrNull()
+                } ?: -1) != myUid
+        }
+    }
+
+    private fun startCallWatch() {
+        val am = getSystemService(AudioManager::class.java) ?: return
+        val cb = object : AudioManager.AudioPlaybackCallback() {
+            override fun onPlaybackConfigChanged(configs: MutableList<AudioPlaybackConfiguration>?) {
+                onCallStateMaybeChanged()
+            }
+        }
+        callWatchCallback = cb
+        am.registerAudioPlaybackCallback(cb, wakeHandler)
+        onCallStateMaybeChanged()
+    }
+
+    private fun onCallStateMaybeChanged() {
+        val now = computeInCall()
+        if (now == inCall) return
+        inCall = now
+        Log.i(TAG, "call: ${if (now) "IN CALL" else "call ended"}")
+        // This runs on the main looper — publish from the command executor (Paho's
+        // sync QoS-1 publish blocks on the PUBACK, up to timeToWait; never on the UI thread).
+        prefs?.let { p ->
+            commandExecutor.submit {
+                publishRaw(HaDiscovery.inCallStateTopic(p.deviceId), if (now) "ON" else "OFF", 1, retained = true)
+            }
+        }
+        if (!now) {
+            // A call may have blocked a reclaim's mic restart — recover the warm mic now.
+            val p = prefs
+            val coexist = p?.let { it.coexistVoiceAssistant && !it.wakeWordEnabled && !it.alexaWakeEnabled } ?: false
+            if (!coexist && !micYieldedForWake && soundMonitor?.isRunning() == false) {
+                soundMonitor?.start()
+                Log.i(TAG, "call: restarted warm mic after call end")
+            }
+        }
+    }
+
+    // HA "Show Dashboard" button: wake the screen and bring the dashboard forward.
+    // During a call the call auto-floats into picture-in-picture and keeps running.
+    private fun showDashboard() {
+        Log.i(TAG, "show dashboard requested (inCall=$inCall)")
+        wakeHandler.post {
+            ScreenControl.wake(this)
+            lastActivityMs = System.currentTimeMillis()
+            bringDashboardToFront()
+        }
+    }
+
     private fun bringDashboardToFront() {
         // Works on A9 too: falcon self-foregrounds a story/music card there, and without an
         // explicit return the end of the turn strands the user on the Meta launcher (plus a
@@ -1916,8 +2032,10 @@ class BridgeService : Service() {
         wakeSpeakingSeen = false
         // Restart the warm mic whenever we normally hold it (not just wake mode) — the sound
         // sensor / enhanced presence need it too, and an assist-button handoff also yields it.
+        // Not during a live call, though: the call owns the mic; onCallStateMaybeChanged
+        // restarts us when it ends.
         val coexist = prefs?.let { it.coexistVoiceAssistant && !it.wakeWordEnabled && !it.alexaWakeEnabled } ?: false
-        if (!coexist && soundMonitor?.isRunning() == false) soundMonitor?.start()
+        if (!coexist && !inCall && soundMonitor?.isRunning() == false) soundMonitor?.start()
         // The assistant may still be speaking its reply; ignore wake matches briefly so
         // its audio (echoed back through the mic) can't immediately re-trigger the handoff.
         wakeDetector?.pauseMatching(3_000L)
@@ -1936,7 +2054,8 @@ class BridgeService : Service() {
         val leaveFalconUp = wakeIsAlexa && Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
             falconPlaying()
         if (leaveFalconUp) Log.i(TAG, "wake: falcon still playing (A9) -> leaving its screen up")
-        if (!wakeFocusReturned && !leaveFalconUp) bringDashboardToFront() else hideWakeCover()
+        // A call answered mid-turn owns the screen now — just drop the cover, don't PiP it.
+        if (!wakeFocusReturned && !leaveFalconUp && !inCall) bringDashboardToFront() else hideWakeCover()
         wakeFocusReturned = false
         wakeIsAlexa = false
         Log.i(TAG, "wake: reclaimed mic ($reason, ${System.currentTimeMillis() - wakeYieldStartMs}ms total)")
@@ -2004,9 +2123,10 @@ class BridgeService : Service() {
     }
 
     private fun runFalconWarmup() {
-        Log.i(TAG, "wake: falcon warm-up fired (alexa=${prefs?.alexaWakeEnabled} yielded=$micYieldedForWake)")
+        Log.i(TAG, "wake: falcon warm-up fired (alexa=${prefs?.alexaWakeEnabled} yielded=$micYieldedForWake inCall=$inCall)")
         if (prefs?.alexaWakeEnabled != true) return
         if (micYieldedForWake) return   // a real turn is in flight — it warms falcon itself
+        if (inCall) return              // never PiP a live call for a warm-up
         Log.i(TAG, "wake: falcon warm-up kick (foreground behind cover, no LISTEN)")
         showWakeCover(Runnable {
             runCatching {

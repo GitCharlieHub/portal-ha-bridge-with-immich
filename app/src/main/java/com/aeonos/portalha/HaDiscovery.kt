@@ -180,6 +180,31 @@ object HaDiscovery {
         return """{"name":"Alert","unique_id":"${deviceId}_alert","device":${device(deviceId, name)},"command_topic":"${soundCommandTopic(deviceId)}","payload_press":"alert","icon":"mdi:alert"}"""
     }
 
+    // ── In-call sensor + Show Dashboard button ────────────────────────────────
+    // "In Call" = a live Meta call (Messenger/WhatsApp) on this Portal. "Show
+    // Dashboard" brings the HA dashboard to the front — during a call the call
+    // keeps running in a floating picture-in-picture window over it.
+
+    fun inCallDiscoveryTopic(deviceId: String) =
+        "homeassistant/binary_sensor/${deviceId}_in_call/config"
+
+    fun inCallStateTopic(deviceId: String) = "portal/$deviceId/in_call/state"
+
+    fun inCallConfigPayload(deviceId: String, deviceName: String): String {
+        val name = deviceName.escape()
+        return """{"name":"In Call","unique_id":"${deviceId}_in_call","device":${device(deviceId, name)},"state_topic":"${inCallStateTopic(deviceId)}","payload_on":"ON","payload_off":"OFF","icon":"mdi:phone-in-talk"}"""
+    }
+
+    fun showDashboardCommandTopic(deviceId: String) = "portal/$deviceId/show_dashboard"
+
+    fun showDashboardDiscoveryTopic(deviceId: String) =
+        "homeassistant/button/${deviceId}_show_dashboard/config"
+
+    fun showDashboardConfigPayload(deviceId: String, deviceName: String): String {
+        val name = deviceName.escape()
+        return """{"name":"Show Dashboard","unique_id":"${deviceId}_show_dashboard","device":${device(deviceId, name)},"command_topic":"${showDashboardCommandTopic(deviceId)}","payload_press":"show","icon":"mdi:monitor-dashboard"}"""
+    }
+
     // ── Volume mute switch ────────────────────────────────────────────────────
 
     fun volumeMuteDiscoveryTopic(deviceId: String) =
@@ -365,6 +390,7 @@ object HaDiscovery {
         motionEnableCommandTopic(deviceId),
         streamEnableCommandTopic(deviceId),
         soundCommandTopic(deviceId),
+        showDashboardCommandTopic(deviceId),
         presenceEnableCommandTopic(deviceId),
         screenTimeoutCommandTopic(deviceId),
         screenTimeoutMinsCommandTopic(deviceId),
