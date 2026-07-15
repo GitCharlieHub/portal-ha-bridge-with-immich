@@ -82,6 +82,15 @@ class BridgeService : Service() {
         private const val ALEXA_DIALOG_GRACE_MS = 4_000L
         @Volatile private var crashGuardInstalled = false
 
+        // RTSP self-heal: how long after a (re)start to verify the camera actually
+        // opened, how long to ignore our own torn-down camera's freed event, and
+        // the foreground auto-retry cap per failure chain (backoff 1s→30s; a
+        // return to the app always arms one more try via ensureCamera).
+        private const val RTSP_HEALTH_CHECK_MS = 4_000L
+        private const val RTSP_OWN_STOP_IGNORE_MS = 3_000L
+        private const val RTSP_RECOVER_MAX_ATTEMPTS = 6
+        private const val DASHBOARD_RETURN_MS = 90_000L
+
         private const val ACTION_SET_CAMERA = "com.aeonos.portalha.SET_CAMERA"
         private const val EXTRA_CAMERA_ON = "camera_on"
         private const val ACTION_SET_ROTATION = "com.aeonos.portalha.SET_ROTATION"
@@ -242,17 +251,118 @@ class BridgeService : Service() {
     // we still think we're streaming, that means we lost it → restart to recover.
     private var frontCameraId: String? = null
     @Volatile private var rtspNeedsRestart = false
+    // Whether ANYONE currently holds Camera 0 (availability callback state). While
+    // RTSP streams it should be us; "streaming" with the camera free = dead stream.
+    @Volatile private var frontCamInUse = false
+    @Volatile private var lastRtspStartMs = 0L
+    @Volatile private var lastRtspDeadMs = 0L
+    @Volatile private var rtspRecoverAttempts = 0
     private val cameraAvailabilityCallback = object : CameraManager.AvailabilityCallback() {
         override fun onCameraAvailable(cameraId: String) {
+            if (cameraId != frontCameraId) return
+            frontCamInUse = false
             // Our front camera went free while we still think we're streaming → a
             // call took it. DON'T restart here: we're backgrounded (call just ended)
             // and Android blocks opening the camera from the background. Flag it and
             // recover on the next return to the app (ensureCamera → foreground).
-            if (cameraId == frontCameraId && rtspStreamer?.isStreaming == true) {
-                Log.i(TAG, "camera $cameraId freed while streaming (call?) — will recover on return to app")
-                rtspNeedsRestart = true
+            // Freed events within a few seconds of our own (re)start are the close
+            // of the stream we just tore down arriving late — those must NOT set the
+            // flag (they faked a "call took the camera" and cascaded restarts).
+            if (rtspStreamer?.isStreaming == true &&
+                System.currentTimeMillis() - lastRtspStartMs > RTSP_OWN_STOP_IGNORE_MS) {
+                Log.i(TAG, "camera $cameraId freed while streaming — stream dead")
+                onRtspStreamDead("camera taken")
             }
         }
+        override fun onCameraUnavailable(cameraId: String) {
+            if (cameraId == frontCameraId) frontCamInUse = true
+        }
+    }
+
+    // Stranded-dashboard auto-return. A launcher self-promotion (observed on the
+    // omni: com.immortal.launcher takes the front on its own) backgrounds the app
+    // and A10 evicts our camera. On a Portal whose presence keeps the screen on,
+    // no activity resume ever comes — the stream stayed dead for hours until a
+    // human or HA intervened. When the stream is flagged dead while we're not in
+    // front, bring the dashboard back after a grace period, unless the Portal is
+    // genuinely mid-something (call, cast, Alexa turn/playback — then re-check).
+    // Screen off is left alone: the next screen-on resume heals by itself.
+    private val dashboardReturn = Runnable {
+        val p = prefs
+        when {
+            !rtspNeedsRestart || dashboardForeground -> {}   // healed or already back
+            p == null || !p.cameraServiceEnabled || !p.cameraOn || !p.streamEnabled -> {}
+            !screenOn -> {}
+            inCall || micYieldedForWake || TvAppActivity.isShowing() || falconPlaying() ->
+                scheduleDashboardReturn()                    // busy — check again later
+            else -> {
+                Log.i(TAG, "stream dead in background — returning dashboard to front")
+                bringDashboardToFront()                      // resume → ensureCamera recovers
+            }
+        }
+    }
+    private fun scheduleDashboardReturn() {
+        wakeHandler.removeCallbacks(dashboardReturn)
+        wakeHandler.postDelayed(dashboardReturn, DASHBOARD_RETURN_MS)
+    }
+
+    // start()/startStream() report success even when Android refused the camera
+    // (A10 blocks opening from the background) — the encoder then never produces
+    // video and clients get "video info is null" forever. Verify a few seconds
+    // after every (re)start that Camera 0 is actually held; if not, the stream is
+    // dead and must be flagged for recovery.
+    private val rtspHealthCheck = Runnable {
+        if (rtspStreamer?.isStreaming == true && !frontCamInUse) {
+            Log.w(TAG, "rtsp health check: streaming but camera 0 never opened")
+            onRtspStreamDead("camera not open")
+        }
+    }
+
+    // Call after every RTSP (re)start attempt.
+    private fun noteRtspStarted() {
+        lastRtspStartMs = System.currentTimeMillis()
+        wakeHandler.removeCallbacks(rtspHealthCheck)
+        wakeHandler.postDelayed(rtspHealthCheck, RTSP_HEALTH_CHECK_MS)
+    }
+
+    // A dead stream never healed itself before: isStreaming stayed true so both
+    // ensureCamera and applyCameraState treated it as running. Central sink for
+    // all dead-stream signals (camera never opened, EADDRINUSE server bind loss,
+    // clients starving on "video info is null"): flag for the foreground-return
+    // recovery, and when the dashboard is already front retry here with backoff.
+    private fun onRtspStreamDead(reason: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastRtspDeadMs > 60_000L) rtspRecoverAttempts = 0   // new failure chain
+        lastRtspDeadMs = now
+        rtspNeedsRestart = true
+        // A lost server socket (EADDRINUSE) needs no foreground to rebind — always
+        // retry those. Camera-open failures DO need the app in front, so don't
+        // spin on them in the background; ensureCamera recovers on the next
+        // return to the app (the HA "Show Dashboard" button is enough).
+        val bindFailure = reason.contains("Server creation failed")
+        if (!bindFailure && !dashboardForeground) {
+            Log.w(TAG, "rtsp stream dead ($reason) while backgrounded — will recover on return to app")
+            scheduleDashboardReturn()
+            return
+        }
+        if (rtspRecoverAttempts >= RTSP_RECOVER_MAX_ATTEMPTS) {
+            Log.w(TAG, "rtsp stream dead ($reason) — retry cap hit, waiting for return to app")
+            return
+        }
+        val backoff = (1000L shl rtspRecoverAttempts).coerceAtMost(30_000L)
+        rtspRecoverAttempts++
+        Log.w(TAG, "rtsp stream dead ($reason) — auto-restart #$rtspRecoverAttempts in ${backoff}ms")
+        wakeHandler.postDelayed({
+            commandExecutor.submit {
+                val p = prefs ?: return@submit
+                val r = rtspStreamer ?: return@submit
+                if (p.cameraServiceEnabled && p.cameraOn && rtspNeedsRestart && r.isStreaming) {
+                    rtspNeedsRestart = false
+                    r.restart()
+                    noteRtspStarted()
+                }
+            }
+        }, backoff)
     }
 
     // Accelerometer auto-rotate. The Portal locks its OS display rotation, but the
@@ -463,7 +573,7 @@ class BridgeService : Service() {
             val deg = intent.getIntExtra(EXTRA_ROTATION, 0)
             commandExecutor.submit {
                 cameraStream?.rotation = deg                    // motion path (live)
-                rtspStreamer?.let { it.rotationOffset = deg; if (it.isStreaming) it.restart() }
+                rtspStreamer?.let { it.rotationOffset = deg; if (it.isStreaming) { it.restart(); noteRtspStarted() } }
                 Log.i(TAG, "manual rotation offset set to $deg deg")
             }
         }
@@ -478,8 +588,9 @@ class BridgeService : Service() {
                             // A call took the camera and freed it; we're foreground
                             // now so the camera can reopen — restart to recover.
                             rtspNeedsRestart = false
-                            Log.i(TAG, "ensureCamera: recovering stream after call took the camera — restart")
+                            Log.i(TAG, "ensureCamera: recovering dead stream — restart")
                             r.restart()
+                            noteRtspStarted()
                         } else {
                             applyCameraState(p)
                         }
@@ -818,9 +929,15 @@ class BridgeService : Service() {
             if (p.motionEnabled) publishMotionSensitivityState(p)
             // Restore desired camera state after an app restart / reboot
             // (commands are no longer retained on the broker, so we do this ourselves).
+            // MUST run on the commandExecutor: every other stream start/stop/restart
+            // is serialized on that single thread, and restart() sleeps OUTSIDE the
+            // applyCameraState lock — calling from the MQTT thread raced the boot
+            // orientation restart mid-sleep (two servers fought, one leaked the port).
             if (p.cameraOn) {
-                Log.i(TAG, "restoring camera ON (persisted desired state)")
-                applyCameraState(p)
+                commandExecutor.submit {
+                    Log.i(TAG, "restoring camera ON (persisted desired state)")
+                    applyCameraState(p)
+                }
             }
         }
 
@@ -1095,16 +1212,20 @@ class BridgeService : Service() {
     }
 
     // Single authority for Camera 0 ownership. RTSP streaming and motion are
-    // mutually exclusive (each opens the camera directly). @Synchronized because
-    // the MQTT-restore path and ensureCamera (commandExecutor) can call it
-    // concurrently — without it, both start RTSP and the 2nd collides on port 8554.
+    // mutually exclusive (each opens the camera directly). Every caller must be
+    // on the single-threaded commandExecutor — restart()'s stop/sleep/start runs
+    // OUTSIDE this lock, so only executor serialization prevents two servers
+    // fighting over port 8554. @Synchronized kept as a belt.
     @Synchronized
     private fun applyCameraState(p: Prefs) {
         val on = p.cameraServiceEnabled && p.cameraOn
         when {
             on && p.streamEnabled -> {
                 stopCameraStreamSilently()   // RTSP needs Camera 0
-                val r = rtspStreamer ?: RtspStreamer(this).also { rtspStreamer = it }
+                val r = rtspStreamer ?: RtspStreamer(this).also {
+                    rtspStreamer = it
+                    it.onStreamDead = { reason -> onRtspStreamDead(reason) }
+                }
                 r.rotationOffset = p.streamRotation
                 if (!r.isStreaming) {
                     // withAudio=false → NoAudioSource: the RTSP stream must NOT open
@@ -1113,7 +1234,7 @@ class BridgeService : Service() {
                     val ok = r.start(1280, 720, 15, 2_000_000, withAudio = false)
                     cameraActive = ok
                     publishRaw(HaDiscovery.cameraStateTopic(p.deviceId), if (ok) "ON" else "OFF", 1, retained = true)
-                    if (!ok) Log.w(TAG, "RTSP failed to start")
+                    if (ok) noteRtspStarted() else Log.w(TAG, "RTSP failed to start")
                 }
             }
             on && p.motionEnabled -> {
@@ -1189,7 +1310,7 @@ class BridgeService : Service() {
         if (auto == r.autoRotation) return   // no actual change — leave the stream alone
         r.autoRotation = auto
         commandExecutor.submit {
-            if (r.isStreaming) r.restart()
+            if (r.isStreaming) { r.restart(); noteRtspStarted() }
         }
     }
 

@@ -4,6 +4,40 @@ All notable changes to Portal HA Bridge. Versions are the app `versionName`;
 the in-app updater (Settings → *Check for Updates*) and the provisioner both pull
 the latest GitHub release.
 
+## v1.17.2 — Camera stream self-heal + call awareness
+
+**Fixed**
+- **The camera stream now recovers by itself instead of dying silently.** Two
+  long-standing wedge states left the app *believing* it was streaming while
+  Home Assistant showed a dead camera until the app was manually restarted:
+  - Camera turned ON while the app was in the background (e.g. the Portal was
+    left on the launcher): Android 10 refuses the camera but the stream
+    reported success. The app now detects that the camera never opened and
+    restarts the stream — automatically when the dashboard is visible, or the
+    moment it next comes to the front (the HA **Show Dashboard** button is
+    enough to heal it remotely).
+  - A restart race at startup could lose the RTSP port (`EADDRINUSE`) and
+    leave a zombie server. The app now detects the dead server and retries
+    with backoff, and the restart itself waits longer for the port to free.
+  - Camera-freed events from the app's *own* stream restarts no longer
+    masquerade as "a call took the camera" (this caused the cascade of
+    restarts that triggered the port race).
+  - **Stranded-dashboard auto-return.** The Portal launcher can take the
+    foreground by itself (observed in the wild); on Android 10 that evicts the
+    camera, and on a Portal whose presence keeps the screen awake, nothing
+    ever brought the dashboard back — the room saw the launcher and HA saw a
+    dead camera for hours. If the stream is dead while the app is not in
+    front, the dashboard now returns on its own after ~90 s (never during a
+    call, a cast, an Alexa turn/playback, or while the screen is off).
+
+**Added** *(committed earlier, first shipped in this release)*
+- **In Call sensor + Show Dashboard button in Home Assistant.** The bridge
+  publishes whether the Portal is in a Messenger/WhatsApp call, and a button
+  that wakes the screen and brings the dashboard to the front from HA.
+- In-call guards across the app: wake handoffs, announcements, incoming
+  intercom audio, cast launches and the Alexa warm-up all stand down while a
+  call is active.
+
 ## v1.17.1 — Alexa provisioning on macOS/Linux
 
 **Added**

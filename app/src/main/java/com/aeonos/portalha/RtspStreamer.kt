@@ -22,6 +22,12 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     private var stream: RtspServerStream? = null
     @Volatile var isStreaming = false
         private set
+    // Fired when the stream is fatally dead while isStreaming is still true —
+    // the server socket failed to bind (EADDRINUSE after a restart) or a client
+    // asked for video the encoder never produced (camera refused/never opened).
+    // BridgeService uses it to flag recovery; without it these states were
+    // invisible and the stream stayed dead until an app restart.
+    @Volatile var onStreamDead: ((String) -> Unit)? = null
     // Manual base offset (deg, 0/90/180/270) from the ROTATE button. 0 = camera
     // native landscape. Corrects the base on top of the accelerometer auto value.
     @Volatile var rotationOffset = 0
@@ -124,7 +130,11 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     // so only call on an actual orientation change, not continuously.
     fun restart(): Boolean {
         stop()
-        runCatching { Thread.sleep(350) }   // let the accept thread die + port release
+        // 350ms sometimes lost the race — the old accept thread hadn't released
+        // port 8554 yet and the new bind died with EADDRINUSE (which also leaks
+        // the port in-process). 700ms + the BridgeService dead-stream backoff
+        // retries cover the tail.
+        runCatching { Thread.sleep(700) }   // let the accept thread die + port release
         return start(baseWidth, baseHeight, baseFps, baseBitrate, baseAudio)
     }
 
@@ -137,7 +147,15 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
 
     override fun onConnectionStarted(url: String) { Log.i(TAG, "rtsp client connecting: $url") }
     override fun onConnectionSuccess() { Log.i(TAG, "rtsp client connected") }
-    override fun onConnectionFailed(reason: String) { Log.w(TAG, "rtsp failed: $reason") }
+    override fun onConnectionFailed(reason: String) {
+        Log.w(TAG, "rtsp failed: $reason")
+        // Only the two known-fatal signatures kill the stream; per-client
+        // handshake noise must not trigger restarts of a healthy stream.
+        if (isStreaming &&
+            (reason.contains("Server creation failed") || reason.contains("video info is null"))) {
+            onStreamDead?.invoke(reason)
+        }
+    }
     override fun onNewBitrate(bitrate: Long) { }
     override fun onDisconnect() { Log.i(TAG, "rtsp client disconnected") }
     override fun onAuthError() { Log.w(TAG, "rtsp auth error") }
