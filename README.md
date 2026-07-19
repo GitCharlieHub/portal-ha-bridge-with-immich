@@ -1,10 +1,14 @@
-# Portal HA Bridge
+# Portal HA Bridge with ImmichFrame
+
+Fork of **Portal HA Bridge** based on upstream `v1.17.2`, with an added **ImmichFrame foreground dashboard mode**. The app can keep **Portal HA Bridge** as the foreground Meta Portal app, preserving camera access for RTSP/Home Assistant/Frigate, while the full-screen WebView displays your ImmichFrame slideshow.
+
+Latest fork build: `1.17.2-immich.1`.
 
 Turn a **Meta Portal** into a fully-fledged **Home Assistant** device — screen control, camera streaming, motion & presence detection, ambient sensors, sound level, and more — all exposed automatically over **MQTT auto-discovery**. It also turns your Portals into a **push-to-talk intercom** for each other, makes them show up in your phone's **YouTube cast menu** like a smart TV ([Cast YouTube](#cast-youtube-from-your-phone)), and can put **real Amazon Alexa back on the Portal — including Android 10 models** ([Alexa on your Portal](#alexa-on-your-portal)).
 
 It also plugs into a hands-free **voice assistant** ([portal-assistant / "Jarvis"](https://github.com/rudysev/portal-assistant)) so you can control the Portal *and your entire Home Assistant* by voice — see [Voice assistant](#voice-assistant-control-by-voice).
 
-It runs as a persistent background service plus an optional full-screen HA dashboard (kiosk). Nothing is sent anywhere except your own MQTT broker and Home Assistant (voice control additionally uses the assistant's own cloud model under your own key).
+It runs as a persistent background service plus an optional full-screen dashboard (Home Assistant or ImmichFrame kiosk). Nothing is sent anywhere except your own MQTT broker, Home Assistant, and the ImmichFrame server you configure (voice control additionally uses the assistant's own cloud model under your own key).
 
 > Unofficial, third-party project. Not affiliated with or endorsed by Meta.
 
@@ -96,10 +100,12 @@ This fork can keep **Portal HA Bridge** as the foreground app while the dashboar
 
 In **Settings**, enable **Show ImmichFrame in the foreground dashboard**, then enter:
 
-- **ImmichFrame URL**: your ImmichFrame client URL, for example `http://192.168.1.20:8080`
-- **ImmichFrame Authentication Secret**: optional; when set, the app appends `authsecret` to the ImmichFrame viewer URL
+- **ImmichFrame URL**: your ImmichFrame client URL, for example `http://<immichframe-host>:8080`
+- **ImmichFrame Authentication Secret**: optional; when set, the app appends ImmichFrame's `authsecret` query parameter to the viewer URL
 
 On the ImmichFrame server, set `General.AuthenticationSecret` to the same value. Leave ImmichFrame mode off to use the upstream Home Assistant dashboard behavior.
+
+Tested on a physical Meta Portal with ImmichFrame visible in the foreground and the RTSP stream still available.
 
 ---
 

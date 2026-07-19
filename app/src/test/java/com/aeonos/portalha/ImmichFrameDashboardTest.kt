@@ -9,32 +9,32 @@ class ImmichFrameDashboardTest {
     @Test
     fun buildUrlAddsHttpSchemeWhenMissing() {
         assertEquals(
-            "http://192.168.1.50:8080",
-            ImmichFrameDashboard.buildUrl("192.168.1.50:8080", "")
+            "http://frame.local:8080",
+            ImmichFrameDashboard.buildUrl("frame.local:8080", "")
         )
     }
 
     @Test
     fun buildUrlAppendsAuthenticationSecret() {
         assertEquals(
-            "http://frame.local?authsecret=mySecret",
-            ImmichFrameDashboard.buildUrl("frame.local", "mySecret")
+            "http://frame.local?authsecret=example",
+            ImmichFrameDashboard.buildUrl("frame.local", "example")
         )
     }
 
     @Test
     fun buildUrlPreservesExistingQueryParameters() {
         assertEquals(
-            "https://frame.local/?client=Portal&authsecret=my+secret%26value",
-            ImmichFrameDashboard.buildUrl("https://frame.local/?client=Portal", "my secret&value")
+            "https://frame.local/?client=Portal&authsecret=example+value%26more",
+            ImmichFrameDashboard.buildUrl("https://frame.local/?client=Portal", "example value&more")
         )
     }
 
     @Test
     fun buildUrlReplacesExistingAuthenticationSecret() {
         assertEquals(
-            "https://frame.local/?client=Portal&authsecret=newSecret",
-            ImmichFrameDashboard.buildUrl("https://frame.local/?authsecret=old&client=Portal", "newSecret")
+            "https://frame.local/?client=Portal&authsecret=example-new",
+            ImmichFrameDashboard.buildUrl("https://frame.local/?authsecret=example-old&client=Portal", "example-new")
         )
     }
 
