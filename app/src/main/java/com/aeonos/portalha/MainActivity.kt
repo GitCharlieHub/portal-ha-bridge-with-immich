@@ -28,8 +28,15 @@ class MainActivity : AppCompatActivity() {
         val etHaUrl = findViewById<EditText>(R.id.et_ha_url)
         etHaUrl.setText(prefs.haUrl)
 
-        val etImmichUrl = findViewById<EditText>(R.id.et_immich_url)
-        etImmichUrl.setText(prefs.immichFrameUrl)
+        val etHaToken = findViewById<EditText>(R.id.et_ha_token)
+        etHaToken.setText(prefs.haToken)
+
+        val cbImmichFrame = findViewById<CheckBox>(R.id.cb_immich_frame_enabled)
+        val etImmichFrameUrl = findViewById<EditText>(R.id.et_immich_frame_url)
+        val etImmichFrameAuthSecret = findViewById<EditText>(R.id.et_immich_frame_auth_secret)
+        cbImmichFrame.isChecked = prefs.immichFrameEnabled
+        etImmichFrameUrl.setText(prefs.immichFrameUrl)
+        etImmichFrameAuthSecret.setText(prefs.immichFrameAuthSecret)
 
         // Back to the dashboard (MainActivity is always opened from it)
         findViewById<Button>(R.id.btn_back).setOnClickListener { finish() }
@@ -37,6 +44,8 @@ class MainActivity : AppCompatActivity() {
         // Guided permission setup — each tap resolves the next missing item,
         // so no adb is needed (except the optional WRITE_SECURE_SETTINGS).
         findViewById<Button>(R.id.btn_grant).setOnClickListener { grantNextMissing() }
+
+        findViewById<Button>(R.id.btn_check_update).setOnClickListener { checkForUpdate(it as Button) }
 
         val etHost = findViewById<EditText>(R.id.et_host)
         val etPort = findViewById<EditText>(R.id.et_port)
@@ -81,6 +90,10 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, DisplaySettingsActivity::class.java))
         }
 
+        findViewById<Button>(R.id.btn_intercom_settings).setOnClickListener {
+            startActivity(Intent(this, IntercomSettingsActivity::class.java))
+        }
+
         // Other buttons
         findViewById<Button>(R.id.btn_save).setOnClickListener {
             prefs.brokerHost = etHost.text.toString().trim().ifEmpty { "homeassistant.local" }
@@ -89,7 +102,10 @@ class MainActivity : AppCompatActivity() {
             prefs.password = etPass.text.toString()
             prefs.deviceName = etName.text.toString().trim().ifEmpty { "Portal" }
             prefs.haUrl = etHaUrl.text.toString().trim()
-            prefs.immichFrameUrl = etImmichUrl.text.toString().trim()
+            prefs.haToken = etHaToken.text.toString().trim()
+            prefs.immichFrameEnabled = cbImmichFrame.isChecked
+            prefs.immichFrameUrl = etImmichFrameUrl.text.toString().trim()
+            prefs.immichFrameAuthSecret = etImmichFrameAuthSecret.text.toString().trim()
             BridgeService.stop(this)
             BridgeService.start(this)
             updateStatus()
@@ -111,12 +127,118 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // ── In-app updater ────────────────────────────────────────────────────────
+
+    private fun checkForUpdate(btn: Button) {
+        val orig = btn.text
+        btn.isEnabled = false; btn.text = "Checking…"
+        Thread {
+            val result = runCatching { Updater.fetchLatest() }
+            runOnUiThread {
+                btn.isEnabled = true; btn.text = orig
+                result.onSuccess { rel ->
+                    if (Updater.isNewer(rel.version, BuildConfig.VERSION_NAME)) promptUpdate(btn, rel)
+                    else Toast.makeText(this,
+                        "You're on the latest version (v${BuildConfig.VERSION_NAME}).", Toast.LENGTH_SHORT).show()
+                }.onFailure {
+                    Toast.makeText(this, "Couldn't check for updates: ${it.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.also { it.isDaemon = true }.start()
+    }
+
+    private fun promptUpdate(btn: Button, rel: Updater.Release) {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Update available")
+            .setMessage("A newer version is available:\n\nv${BuildConfig.VERSION_NAME}  →  v${rel.version}\n\n" +
+                "Download and install it now? Your settings are kept.")
+            .setPositiveButton("Update") { _, _ -> downloadAndInstall(btn, rel) }
+            .setNegativeButton("Later", null)
+            .show()
+    }
+
+    private fun downloadAndInstall(btn: Button, rel: Updater.Release) {
+        if (!Updater.canInstall(this)) { showInstallPermDialog(); return }
+        val dest = java.io.File(cacheDir, "update.apk")
+        btn.isEnabled = false; btn.text = "Downloading… 0%"
+        Thread {
+            val r = runCatching {
+                Updater.downloadApk(rel.apkUrl, dest) { pct -> runOnUiThread { btn.text = "Downloading… $pct%" } }
+            }
+            runOnUiThread {
+                btn.isEnabled = true; btn.text = "Check for Updates"
+                r.onSuccess {
+                    // Make Meta's white-on-white installer legible on Gen-1 Portal+
+                    // (no-op on API 29+); restored after the install finishes.
+                    Updater.enableInstallerContrast(this)
+                    runCatching { Updater.install(this, dest) }.onFailure {
+                        Updater.restoreInstallerContrast(this)
+                        Toast.makeText(this, "Install failed: ${it.message}", Toast.LENGTH_LONG).show()
+                    }
+                }.onFailure {
+                    Toast.makeText(this, "Download failed: ${it.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.also { it.isDaemon = true }.start()
+    }
+
+    // "Install unknown apps" — flaky to toggle on Portal, so offer the settings
+    // page and the exact adb fallback (the provisioner grants this automatically).
+    private fun showInstallPermDialog() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Allow installing updates")
+            .setMessage("To install updates in-app, this app needs the \"install unknown apps\" " +
+                "permission.\n\nTry Open settings below. If the toggle doesn't take on your Portal, run " +
+                "this on a computer with the Portal connected, then try again:\n\n" +
+                "adb shell appops set $packageName REQUEST_INSTALL_PACKAGES allow\n\n" +
+                "(The provisioner does this for you.)")
+            .setPositiveButton("Open settings") { _, _ ->
+                runCatching {
+                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }.onFailure { Toast.makeText(this, "Settings page unavailable — use the adb command.", Toast.LENGTH_LONG).show() }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     override fun onResume() {
         super.onResume()
         ScreenControl.enableAccessibility(this)
         BridgeService.start(this)
         BridgeService.ensureCamera(this)
         updateStatus()
+        // Safety net: if a self-update killed us before the install receiver could
+        // restore high-contrast text, undo it now (no-op when nothing is pending).
+        Updater.restoreInstallerContrast(this)
+        maybeShowAlexaProvisionNotice()
+    }
+
+    // One-time heads-up after landing on an Alexa-capable build: the OTA update delivers
+    // the Alexa features, but Amazon's Alexa client itself can only be provisioned over
+    // USB (permissions to another package aren't app-grantable). Shown once, and only on
+    // Portals that don't already have it.
+    private fun maybeShowAlexaProvisionNotice() {
+        if (prefs.alexaProvisionNoticeShown) return
+        prefs.alexaProvisionNoticeShown = true
+        val falconInstalled = runCatching {
+            packageManager.getPackageInfo("com.amazon.alexa.multimodal.falcon", 0)
+        }.isSuccess
+        if (falconInstalled) return
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("New: Alexa on your Portal")
+            .setMessage("This version can put real Amazon Alexa on this Portal — wake word, " +
+                "stories, music, “alexa stop”.\n\n" +
+                "It needs a ONE-TIME setup over USB (app updates can't do it): connect a " +
+                "cable to a computer and run\n\n" +
+                "    provision.ps1 -Alexa    (Windows)\n" +
+                "    ./provision.sh --alexa  (macOS/Linux)\n\n" +
+                "then enter the code shown at amazon.com/code, and enable Alexa support in " +
+                "Settings → Display & Presence. Full steps: README, “Alexa on your " +
+                "Portal”. Until then the Alexa features stay off — everything else works " +
+                "as before.")
+            .setPositiveButton("OK", null)
+            .show()
     }
 
 
@@ -130,6 +252,7 @@ class MainActivity : AppCompatActivity() {
         val hasOverlay = Settings.canDrawOverlays(this)
 
         findViewById<TextView>(R.id.tv_status).text = buildString {
+            appendLine("Version:   ${BuildConfig.VERSION_NAME}")
             appendLine("Device ID: ${prefs.deviceId}")
             appendLine("IP:        ${BridgeService.localIp() ?: "(no network)"}")
             appendLine("Broker:    ${prefs.brokerUri}")
@@ -193,6 +316,9 @@ class MainActivity : AppCompatActivity() {
         val density = resources.displayMetrics.density
         fun dp(v: Int) = (v * density).toInt()
 
+        // Each argument on its own line so the space separating the package from
+        // the permission can't disappear into a line wrap. Three lines = three
+        // space-separated parts of one command.
         val code = TextView(this).apply {
             text = "adb shell pm grant\n$packageName\nandroid.permission.WRITE_SECURE_SETTINGS"
             typeface = android.graphics.Typeface.MONOSPACE
@@ -238,6 +364,7 @@ class MainActivity : AppCompatActivity() {
     // detail page (API 29+) which deep-links straight to our toggle, bypassing
     // the list; fall back to the list screen if that isn't available either.
     private fun openAccessibility() {
+        // These framework constants are @hide, so use their literal values.
         val component = "$packageName/${ScreenAccessibility::class.java.name}"
         val args = android.os.Bundle().apply {
             putString("android.provider.extra.ACCESSIBILITY_SERVICE_COMPONENT_NAME", component)
@@ -255,11 +382,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Non-Portal fallback: the standard accessibility list (has its own back button).
     private fun openAccessibilityList() {
         Toast.makeText(this, "Enable 'Portal HA Bridge' for screen sleep", Toast.LENGTH_LONG).show()
         runCatching { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
     }
 
+    // Portal's system settings pages have no back button, so warn the user what
+    // to expect before launching them: toggle ON, then use the Back gesture.
     private fun openSpecialAccess(intent: Intent, toggleName: String, purpose: String) {
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Enable '$toggleName'")

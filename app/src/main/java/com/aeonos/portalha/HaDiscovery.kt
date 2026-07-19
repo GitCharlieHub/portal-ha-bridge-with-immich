@@ -39,6 +39,7 @@ object HaDiscovery {
         return """{"name":"Temperature","unique_id":"${deviceId}_temperature","device":${device(deviceId, name)},"state_topic":"${tempStateTopic(deviceId)}","device_class":"temperature","unit_of_measurement":"°C","state_class":"measurement"}"""
     }
 
+    // Calibration offset for the temperature sensor (HA number).
     fun tempOffsetDiscoveryTopic(deviceId: String) =
         "homeassistant/number/${deviceId}_temp_offset/config"
 
@@ -48,6 +49,20 @@ object HaDiscovery {
     fun tempOffsetConfigPayload(deviceId: String, deviceName: String): String {
         val name = deviceName.escape()
         return """{"name":"Temperature Offset","unique_id":"${deviceId}_temp_offset","device":${device(deviceId, name)},"state_topic":"${tempOffsetStateTopic(deviceId)}","command_topic":"${tempOffsetCommandTopic(deviceId)}","min":-20,"max":20,"step":0.5,"mode":"box","unit_of_measurement":"°C","icon":"mdi:thermometer-plus","entity_category":"config"}"""
+    }
+
+    // HA long-lived token, settable FROM Home Assistant (so it never has to be typed
+    // on the Portal). A `text` entity in password mode; NO state_topic, so the token
+    // is optimistic-only and never echoed back / retained on the broker. The app
+    // stores whatever HA publishes to the command topic into Prefs.haToken.
+    fun haTokenDiscoveryTopic(deviceId: String) =
+        "homeassistant/text/${deviceId}_hatoken/config"
+
+    fun haTokenCommandTopic(deviceId: String) = "portal/$deviceId/config/hatoken/set"
+
+    fun haTokenConfigPayload(deviceId: String, deviceName: String): String {
+        val name = deviceName.escape()
+        return """{"name":"HA Token","unique_id":"${deviceId}_hatoken","device":${device(deviceId, name)},"command_topic":"${haTokenCommandTopic(deviceId)}","mode":"password","max":255,"icon":"mdi:key","entity_category":"config"}"""
     }
 
     // ── Accelerometer ─────────────────────────────────────────────────────────
@@ -165,6 +180,31 @@ object HaDiscovery {
         return """{"name":"Alert","unique_id":"${deviceId}_alert","device":${device(deviceId, name)},"command_topic":"${soundCommandTopic(deviceId)}","payload_press":"alert","icon":"mdi:alert"}"""
     }
 
+    // ── In-call sensor + Show Dashboard button ────────────────────────────────
+    // "In Call" = a live Meta call (Messenger/WhatsApp) on this Portal. "Show
+    // Dashboard" brings the HA dashboard to the front — during a call the call
+    // keeps running in a floating picture-in-picture window over it.
+
+    fun inCallDiscoveryTopic(deviceId: String) =
+        "homeassistant/binary_sensor/${deviceId}_in_call/config"
+
+    fun inCallStateTopic(deviceId: String) = "portal/$deviceId/in_call/state"
+
+    fun inCallConfigPayload(deviceId: String, deviceName: String): String {
+        val name = deviceName.escape()
+        return """{"name":"In Call","unique_id":"${deviceId}_in_call","device":${device(deviceId, name)},"state_topic":"${inCallStateTopic(deviceId)}","payload_on":"ON","payload_off":"OFF","icon":"mdi:phone-in-talk"}"""
+    }
+
+    fun showDashboardCommandTopic(deviceId: String) = "portal/$deviceId/show_dashboard"
+
+    fun showDashboardDiscoveryTopic(deviceId: String) =
+        "homeassistant/button/${deviceId}_show_dashboard/config"
+
+    fun showDashboardConfigPayload(deviceId: String, deviceName: String): String {
+        val name = deviceName.escape()
+        return """{"name":"Show Dashboard","unique_id":"${deviceId}_show_dashboard","device":${device(deviceId, name)},"command_topic":"${showDashboardCommandTopic(deviceId)}","payload_press":"show","icon":"mdi:monitor-dashboard"}"""
+    }
+
     // ── Volume mute switch ────────────────────────────────────────────────────
 
     fun volumeMuteDiscoveryTopic(deviceId: String) =
@@ -258,6 +298,7 @@ object HaDiscovery {
         return """{"name":"Motion Sensitivity","unique_id":"${deviceId}_motion_sensitivity","device":${device(deviceId, name)},"state_topic":"${motionSensitivityStateTopic(deviceId)}","command_topic":"${motionSensitivityCommandTopic(deviceId)}","min":1,"max":100,"step":1,"mode":"slider","icon":"mdi:motion-sensor"}"""
     }
 
+    // Topics to clear when motion detection is disabled
     fun motionEntityTopics(deviceId: String) = listOf(
         motionDiscoveryTopic(deviceId),
         motionSensitivityDiscoveryTopic(deviceId)
@@ -349,6 +390,7 @@ object HaDiscovery {
         motionEnableCommandTopic(deviceId),
         streamEnableCommandTopic(deviceId),
         soundCommandTopic(deviceId),
+        showDashboardCommandTopic(deviceId),
         presenceEnableCommandTopic(deviceId),
         screenTimeoutCommandTopic(deviceId),
         screenTimeoutMinsCommandTopic(deviceId),

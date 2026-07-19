@@ -1,130 +1,355 @@
-# Portal HA Bridge — ImmichFrame Edition
+# Portal HA Bridge
 
-A fork of [portal-ha-bridge](https://github.com/RoadRunner-1024/portal-ha-bridge) that embeds an ImmichFrame photo-slideshow WebView directly into the app, so the Portal's camera stays available to Home Assistant / Frigate **while** beautiful photos play on the screen.
+Turn a **Meta Portal** into a fully-fledged **Home Assistant** device — screen control, camera streaming, motion & presence detection, ambient sensors, sound level, and more — all exposed automatically over **MQTT auto-discovery**. It also turns your Portals into a **push-to-talk intercom** for each other, makes them show up in your phone's **YouTube cast menu** like a smart TV ([Cast YouTube](#cast-youtube-from-your-phone)), and can put **real Amazon Alexa back on the Portal — including Android 10 models** ([Alexa on your Portal](#alexa-on-your-portal)).
 
-## Why this fork?
+It also plugs into a hands-free **voice assistant** ([portal-assistant / "Jarvis"](https://github.com/rudysev/portal-assistant)) so you can control the Portal *and your entire Home Assistant* by voice — see [Voice assistant](#voice-assistant-control-by-voice).
 
-Meta Portal restricts camera access to the foreground app. The upstream portal-ha-bridge is a background service — it loses the camera whenever the Portal launcher (or another app) takes the foreground.
+It runs as a persistent background service plus an optional full-screen HA dashboard (kiosk). Nothing is sent anywhere except your own MQTT broker and Home Assistant (voice control additionally uses the assistant's own cloud model under your own key).
 
-**This fork keeps portal-ha-bridge permanently in the foreground** by displaying ImmichFrame inside its own WebView. The bridge service, MQTT, camera streaming, motion detection, and all HA entities keep running uninterrupted.
+> Unofficial, third-party project. Not affiliated with or endorsed by Meta.
 
-## What is ImmichFrame?
+---
+Buy me some Claude tokens here to support the project!
 
-[ImmichFrame](https://github.com/immichframe/ImmichFrame) is a web-based digital photo frame that connects to your [Immich](https://immich.app/) photo server and shows a slideshow. You access it through a browser via its URL (e.g. `http://192.168.1.10:3000`).
+<a href="https://www.buymeacoffee.com/roadrunner1024" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/arial-yellow.png" alt="Buy Me some Claude Tokens" style="height: 60px !important;width: 217px !important;" ></a>
 
-## Setup
+## What you get in Home Assistant
 
-### 1. Install ImmichFrame
+Everything below appears automatically as one HA **device** (named whatever you set in the app), via MQTT discovery — no YAML required for the entities themselves.
 
-Run ImmichFrame on a server on your local network. Note its URL.
+| Entity | Type | Notes |
+|---|---|---|
+| **Screen** | switch | Sleep / wake the display |
+| **Screen Timeout** + **Screen Timeout Minutes** | switch + number | On-device idle screen-off timer (works without HA) |
+| **Camera** | switch | Master camera power on/off |
+| **Camera Streaming** | switch | RTSP H.264 stream on `:8554` (see below) |
+| **Motion Detection** | switch | adds **Motion** (binary_sensor) + **Motion Sensitivity** (number) |
+| **Portal Presence** | binary_sensor | Occupancy from Meta's *own* face detection, optionally + ambient sound (see below) |
+| **Presence Detection** | switch | Enable/disable the presence sensor |
+| **Ambient Light** | sensor | lux (`tcs34x0`) |
+| **Light R / G / B** | sensors | colour channels (hardware-dependent) |
+| **Temperature** + **Temperature Offset** | sensor + number | only on models with an ambient-temp sensor |
+| **Sound Level** | sensor | 0–100 ambient loudness (amplitude only, audio never stored) |
+| **Tap** / **Tilt** | sensor | knock/tilt gesture direction (`left/right/up/down/front/back`) |
+| **Tap/Tilt Sensitivity** | number | threshold slider |
+| **Accel X / Y / Z** | sensors | raw accelerometer |
+| **Brightness** | number | screen brightness 0–100 |
+| **Volume** + **Volume Mute** | number + switch | media volume |
+| **Mic Mute** | switch | microphone mute |
+| **Doorbell** / **Alert** | buttons | play a tone on the Portal |
 
-### 2. Install this app
+Camera, Motion, and Camera Streaming are mutually managed: Motion and Streaming each open Camera 0 and are **mutually exclusive**.
 
-Build and install the APK via ADB, or use Android Studio.
+---
 
-### 3. One-time ADB setup (same as upstream)
+## Supported devices
 
-Connect the Portal by USB to a computer and run:
+Meta Portal family on **Android 9 (API 28)** and **Android 10 (API 29)** — Portal (10"), Portal Mini, Portal+ (1st & 2nd gen). One APK covers them all (`minSdk 28`). Sensor availability and a couple of behaviours vary by model — see [Per-model notes](#per-model-notes).
+
+---
+
+## Quick start
+
+### 1. Install + provision
+
+**Windows:**
+
+```powershell
+iwr https://raw.githubusercontent.com/RoadRunner-1024/portal-ha-bridge/main/provision.ps1 -OutFile provision.ps1
+Unblock-File .\provision.ps1
+.\provision.ps1
+```
+
+**macOS / Linux:**
 
 ```bash
-# Required for camera access
-adb shell pm grant com.aeonos.portalha android.permission.CAMERA
-
-# Required for sound level sensor
-adb shell pm grant com.aeonos.portalha android.permission.RECORD_AUDIO
-
-# Required for screen brightness control
-adb shell appops set com.aeonos.portalha WRITE_SETTINGS allow
-
-# Required for SYSTEM_ALERT_WINDOW (keeps camera accessible when another app is briefly shown)
-adb shell appops set com.aeonos.portalha SYSTEM_ALERT_WINDOW allow
-
-# Optional: auto-enable the accessibility service (needed for screen sleep command)
-adb shell pm grant com.aeonos.portalha android.permission.WRITE_SECURE_SETTINGS
-
-# Optional: portal presence detection (reads Meta's own face detection from logcat)
-adb shell pm grant com.aeonos.portalha android.permission.READ_LOGS
+curl -fsSL https://raw.githubusercontent.com/RoadRunner-1024/portal-ha-bridge/main/provision.sh -o provision.sh
+chmod +x provision.sh
+./provision.sh
 ```
 
-### 4. Configure the app
+Both do the same thing — **nothing needs to be pre-installed**. The script downloads Google's platform-tools if `adb` isn't on your PATH, downloads and installs the latest release APK if the app isn't already on the device, grants every permission/app-op (all require ADB — they can't be granted from the Portal UI), auto-enables the screen-control accessibility service, and prints a green verification checklist. On **1st-gen Portal+ (Android 9)** it also disables a Meta display overlay that rendered the system installer dialog blank — so the **in-app updater** (Settings → *Check for Updates*) and sideloads are visible.
 
-Open the app and go to **Settings**:
+| Flag (Windows / macOS+Linux) | Effect |
+|---|---|
+| *(none)* | install the app if it's missing, then grant everything |
+| `-Install` / `--install` | force a reinstall / update to the latest APK |
+| `-Apk <path>` / `--apk <path>` | install a specific APK instead of downloading |
+| `-SetLauncher` / `--set-launcher` | also set the immortal launcher as the kiosk home |
+| `-FreeAlohaMic` / `--free-mic` | free a 1st-gen Portal+ mic for **two-way intercom** (disables Meta's "Hey Alexa" detector; reversible) |
+| `-RestoreAlohaMic` / `--restore-mic` | undo `--free-mic` (re-enable "Hey Alexa") |
+| `-Alexa` / `--alexa` | provision **Amazon Alexa** (install + grant + amazon.com/code sign-in) — see [Alexa on your Portal](#alexa-on-your-portal) |
+| `-Serial <id>` / `--serial <id>` | target a specific device when several are attached |
 
-- **MQTT Broker**: enter your Home Assistant MQTT broker address and credentials
-- **Device name**: how the device appears in HA (default: Portal)
-- **Home Assistant Dashboard URL**: the HA dashboard to show when in HA mode
-- **ImmichFrame Photo Slideshow**: enable and enter your ImmichFrame server URL
+> Prefer to build it yourself? See [Building from source](#building-from-source) — the provisioner automatically uses your build output if it finds one.
+>
+> No computer at all? You can install the APK and grant **most** things via the app's own permission prompts — but **screen sleep and Portal presence each need a one-time ADB grant** (`WRITE_SECURE_SETTINGS` and `READ_LOGS`), because Portal blocks them from its UI. See [SETUP.md](SETUP.md).
 
-Tap **Save & Restart Service**.
+### 2. Configure
+Open **Portal HA Bridge** on the device and enter your **MQTT broker** host/port/credentials and a **device name** (this becomes the HA device + entity prefix). Save & restart.
 
-### 5. Switch between modes
+The HA device appears automatically.
 
-Swipe from the left edge of the screen to open the drawer, then:
+### Optional: ImmichFrame foreground dashboard
 
-- **"HA Dashboard"** button → switch to the HA dashboard view
-- **"Photo Frame"** button → switch back to ImmichFrame
+This fork can keep **Portal HA Bridge** as the foreground app while the dashboard WebView displays your **ImmichFrame** slideshow. That preserves the Portal camera foreground behavior while showing photos.
 
-The toggle button only appears when both URLs are configured.
+In **Settings**, enable **Show ImmichFrame in the foreground dashboard**, then enter:
 
-## Home Assistant entities
+- **ImmichFrame URL**: your ImmichFrame client URL, for example `http://192.168.1.20:8080`
+- **ImmichFrame Authentication Secret**: optional; when set, the app appends `authsecret` to the ImmichFrame viewer URL
 
-All entities from upstream are published under `portal/<device_id>/`:
+On the ImmichFrame server, set `General.AuthenticationSecret` to the same value. Leave ImmichFrame mode off to use the upstream Home Assistant dashboard behavior.
 
-| Entity | Type | Description |
-|---|---|---|
-| Screen | switch | Wake / sleep the screen |
-| Ambient Light | sensor | Lux reading |
-| Temperature | sensor | Die temperature (Portal+ only) |
-| Temperature Offset | number | Calibration offset in °C |
-| Tap/Tilt | sensor | Gesture direction |
-| Tap Sensitivity | number | Threshold for tap/tilt detection |
-| Sound Level | sensor | Ambient 0–100% |
-| Mic Mute | switch | Mute/unmute the microphone |
-| Volume | number | Media volume 0–100 |
-| Volume Mute | switch | Mute/unmute media volume |
-| Doorbell | button | Play doorbell chime |
-| Alert | button | Play alert beep |
-| Brightness | number | Screen brightness 0–100 |
-| IP Address | sensor | Current Wi-Fi IP |
-| Camera | switch | Turn camera on/off |
-| Motion | binary_sensor | Motion detected |
-| Motion Detection | switch | Enable/disable motion feature |
-| Motion Sensitivity | number | 1=sensitive, 100=firm |
-| Camera Streaming | switch | Enable/disable RTSP stream |
-| Portal Presence | binary_sensor | Face detected (READ_LOGS required) |
-| Presence Detection | switch | Enable/disable presence feature |
-| Screen Timeout | switch | Auto-sleep when idle |
-| Screen Timeout Minutes | number | Minutes before sleep |
+---
 
-## Camera streaming (Frigate)
+## Camera streaming (RTSP → Home Assistant)
 
-With **RTSP Streaming** enabled in Camera Settings:
+When **Camera Streaming** is on, the app serves H.264 (Constrained Baseline) at:
 
-```yaml
-# Frigate config example
-cameras:
-  portal:
-    ffmpeg:
-      inputs:
-        - path: rtsp://192.168.1.x:8554/
-          roles: [detect, record]
+```
+rtsp://<portal-ip>:8554/
 ```
 
-Or in Home Assistant with the WebRTC card:
+It plays directly in VLC. For Home Assistant, the cleanest path is the **WebRTC Camera** custom card. Because the stream carries a mandatory (silent) AAC track that WebRTC can't use, ingest it through go2rtc's ffmpeg with `#video=copy` to drop the audio:
 
 ```yaml
 type: custom:webrtc-camera
-url: 'ffmpeg:rtsp://192.168.1.x:8554/#video=copy'
+url: 'ffmpeg:rtsp://<portal-ip>:8554/#video=copy'
 ```
 
-## Differences from upstream
+The app's **Camera Settings** screen shows this exact line with the device's own IP filled in.
 
-- `DashboardActivity`: ImmichFrame/HA dual-mode WebView with drawer toggle
-- `MainActivity`: ImmichFrame URL + enable switch added to Settings
-- `Prefs`: `immichFrameUrl` and `immichFrameEnabled` fields added
-- `BridgeService`: written from scratch based on upstream architecture (same MQTT topics, same HA entities)
-- All other Kotlin files: identical to upstream
+Notes:
+- The H.264 profile is forced to **Constrained Baseline** so browser WebRTC accepts it.
+- Audio is intentionally dropped — the Portal mic is reserved for calls and the sound sensor.
+- If a **Portal call** grabs the camera, the stream is auto-recovered when you return to the dashboard app.
+- Orientation: a manual **Rotate** button is provided; on fixed-orientation Portals you set it once.
+
+### Portal+ camera aspect ratio
+
+The Portal+ front camera ("Smart Camera") only exposes a virtual sensor that scales its field of view into whatever size is requested, so a normal 16:9 request comes out badly stretched. The app corrects this per model:
+
+- **Portal+ 1st gen (`aloha`)** — its usable FOV is ~square, so the stream is encoded **480×480 (1:1)**. It displays correctly in every player with **no extra config**.
+- **Portal+ 2nd gen (`cipher`)** — its FOV is 4:3 but the camera is portrait-mounted, so making it upright forces a **480×640** portrait buffer (a 4:3 scene squashed into 3:4). The encoder library can't stamp a pixel-aspect flag, so the 4:3 is applied **viewer-side**. For the HA WebRTC card, add a SAR via go2rtc's ffmpeg — it's a no-re-encode bitstream filter:
+
+  ```yaml
+  type: custom:webrtc-camera
+  url: 'ffmpeg:rtsp://<cipher-ip>:8554/#video=copy#raw=-bsf:v h264_metadata=sample_aspect_ratio=16/9'
+  ```
+
+  In VLC direct, set **Video → Aspect Ratio → 4:3**. (A future encoder-pipeline rewrite could bake the aspect into the stream itself.)
+
+### Show camera feeds only when on (HA dashboard view)
+
+```yaml
+type: conditional
+conditions:
+  - entity: switch.<device>_camera
+    state: "on"
+card:
+  type: custom:webrtc-camera
+  url: 'ffmpeg:rtsp://<portal-ip>:8554/#video=copy'
+```
+
+---
+
+## Intercom (Portal-to-Portal announce)
+
+Talk between Portals on your network — hold a button, speak, and it plays out loud on the other Portal(s). It's audio-only and half-duplex ("push to announce"), and it rides the **same MQTT broker** you already use for Home Assistant, so nothing leaves your network. No Home Assistant configuration is needed — it's Portal-to-Portal. All Portals just need to point at the same broker, each with a distinct device name.
+
+- **Hold to Announce** — every dashboard's left-edge drawer has a Hold to Announce button with a target picker: **Everyone** (broadcast) or a **specific Portal**. Hold it, wait for the soft beep (the mic is live — "talk now"), and speak.
+- **Floating talk buttons** — optionally show always-on push-to-talk buttons on the dashboard. Create **as many as you like, each named and bound to its own target** (e.g. "Kitchen", "Office", "Everyone"). Double-tap a button to move it, then drag — it locks back into place when you let go.
+- **Appearance** — colour (hue / saturation / brightness, including grey), opacity, transparent background, and text colour are all configurable with a **live preview**, in **Settings → Intercom**.
+- **One at a time** — a network-wide speaking lock means only one Portal talks at once; the rest show "busy" until it's free (and it self-heals if a talker drops off).
+- **Volume** — incoming announcements play at a configurable level (Settings → Intercom).
+
+**Receive-only Portals.** A Portal can *send* only if a sideloaded app can get real-time microphone audio. On **Portal+** models, Meta's own always-on far-field mic / "Hey Alexa" detector can hold the microphone and throttle third-party capture, so an affected Portal is **receive-only** — it hears announcements but can't send them. The app measures this automatically at startup and shows a note in **Settings → Intercom**; receive-only Portals simply disable their send controls.
+
+> **Reclaim two-way on a Portal+:** run the provisioner with `--free-mic` (`-FreeAlohaMic`) — or simply provision Alexa (`--alexa` / `-Alexa`), which does it automatically (the bridge's own wake word replaces Meta's detector). Either way it disables `com.millennium`, freeing the mic for transmit **without touching face-presence or Smart-Camera framing** — two-way confirmed working on a 1st-gen Portal+. Reversible with `--restore-mic`.
+
+> Uses `RECORD_AUDIO` for the mic and (for the floating buttons) `SYSTEM_ALERT_WINDOW` — both already granted by the provisioner.
+
+---
+
+## Cast YouTube from your phone
+
+Every Portal running the app appears in the **YouTube app's cast menu** (Android and iPhone) on the same Wi-Fi, under its device name — just like a smart TV. Tap it and the Portal plays full-screen YouTube; **all control stays on the phone** (browse, play/pause, seek, queue). A sleeping Portal wakes when you cast. Disconnect on the phone — or long-press the Portal's screen — and it drops back to the Home Assistant dashboard.
+
+- **Zero configuration** — no pairing codes, no accounts on the Portal. Discovery is DIAL on your LAN; playback is YouTube's own TV web client in a WebView.
+- **Per-Portal names** — the cast entry uses the device name from Settings, so a fleet shows up as "Portal-Office", "Portal-Kitchen", …
+- **Limits** — YouTube only. DRM streaming apps (Netflix, Disney+ …) require Google-certified receivers and can't be supported by any sideloaded app.
+
+---
+
+## Voice assistant (control by voice)
+
+Portal HA Bridge plugs into **[portal-assistant](https://github.com/rudysev/portal-assistant)** ("Jarvis", a hands-free Gemini-powered assistant) as a **tool provider**, so you can control this Portal *and your entire Home Assistant* by voice — without modifying the assistant. Say **"Hey Jarvis, …"** — the wake word is detected **on-device by this app** ([see below](#hands-free-wake-word)):
+
+| Say something like | What happens |
+|---|---|
+| "turn off the screen" / "wake the screen" | sleeps / wakes this Portal's display |
+| "turn the camera on" | toggles the Portal's HA camera stream |
+| "is anyone home?" | reports the **Portal Presence** state |
+| "turn on Thea's light", "run the goodnight scene", "set the bedroom to 20°" | controls **any** Home Assistant device |
+
+It's implemented via the assistant's public `ToolContract` — an exported `ContentProvider` advertising function-calling tools (only the assistant package may invoke them). For Home Assistant it uses the REST API and can **discover any entity by name**, so it controls every device with **no need to expose entities to HA Assist**.
+
+### Setup
+1. Install **portal-assistant** (Jarvis) on the Portal (one-click installer) and give it a free Gemini API key. *(The wake word is handled by this app — see below — so portal-wake isn't required.)*
+2. In Jarvis → **Settings → External tools**, switch on **Portal HA Bridge**.
+3. Give the bridge a Home Assistant **long-lived access token** (HA → your profile → *Long-Lived Access Tokens*) so it can control HA — two ways:
+   - **From Home Assistant (recommended):** paste it into the **HA Token** entity that appears under the Portal device — no typing on the Portal, and you can do it for every Portal from HA.
+   - **On the device:** the *HA token* field in Settings, next to the HA URL.
+
+### Hands-free wake word
+This app detects the wake phrase **on-device** (a small offline **Vosk** recognizer, on the mic it already holds) and triggers Jarvis via portal-wake's public handoff broadcast — **no separate wake app, and it works on Android 10 Portals**, which portal-assistant otherwise marks "Gen-1 only".
+
+- Enable **On-device wake word** in **Settings → Display & Presence**. First enable downloads a ~40 MB model once.
+- **The phrase is editable** (default "hey jarvis"), in the field under the toggle. Vosk is grammar-based, so any phrase works — no new model, no retraining.
+- **Android 9 (Portal+ 1st-gen):** wakes Jarvis subtly (its background overlay). **Android 10 (Portal / Mini):** Android denies the mic to a background-woken assistant, so the app briefly brings Jarvis to the foreground to let it hear you, then returns to the dashboard — a short per-wake screen takeover.
+- Mutually exclusive with **Coexist** below: use *this* to let the app detect the wake word, or *Coexist* to run a separate always-on wake app (e.g. portal-wake) instead.
+
+### Coexist with a voice assistant
+Prefer to run a *separate* always-on wake app (e.g. [portal-wake](https://github.com/rudysev/portal-wake)) instead of this app's built-in wake word? The Portal has a single microphone, so turn on **Coexist with voice assistant** (Settings → Display & Presence) and the bridge **releases the mic**: the **Sound Level** sensor and sound-based presence turn off, and the intercom captures on-demand only while you're announcing — so the other app can hear "Hey Jarvis" the rest of the time.
+
+---
+
+## Alexa on your Portal
+
+The bridge can put **real Amazon Alexa** back on a Portal — **including Android 10 models**, where Meta's stock "Hey Alexa" wake app is deaf (Android 10 silences microphone capture for background apps). The app's own on-device wake word does the listening and hands the mic to Alexa, bringing her forward invisibly behind a frozen frame of your dashboard for the length of the turn.
+
+**One-time setup (per Portal, over USB):**
+
+1. Run the provisioner with the Alexa flag — Windows:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\provision.ps1 -Alexa
+   ```
+   macOS / Linux:
+   ```bash
+   ./provision.sh --alexa
+   ```
+   Either downloads and SHA-verifies the stock Alexa client, installs it, grants its permissions, and opens the sign-in screen on the Portal.
+2. The Portal shows a code — enter it at **amazon.com/code** (any Amazon account region works, including .co.uk). The provisioner then relaunches the client until it connects (a few minutes; keep the cable in).
+3. On the Portal: enable **Alexa support** in **Settings → Display & Presence**. The wake phrase is editable — the default bare **"alexa"** is the most reliable.
+
+That's the only step that ever needs a cable: it grants permissions to Amazon's app, which no on-device app can do for another package. Everything after — new Alexa features, fixes — arrives with normal app updates.
+
+**Using it:** say **"alexa"**, wait for the **cyan bar / beep**, then speak. Long answers play to the end ("tell me a story" isn't cut off), interactive skills can keep asking you questions, and saying **"alexa"** while she's talking interrupts her. **"alexa stop"** in one breath is understood directly by the bridge: it pauses playing music instantly (no cloud round-trip) and cuts her off mid-story. The very first request after an app restart may hit a cold start: you'll hear a beep as the bridge auto-retries — just repeat the command.
+
+**Notes:**
+- **App updates never provision Alexa** — the one-time USB step above is always required first. On unprovisioned Portals the app shows a one-time notice after updating, and the Alexa toggle points you back here; everything else works without it.
+- **Android 9 (Portal+ 1st-gen):** no screen takeover is needed — Alexa pops her own story/music card over the dashboard and it stays up while audio plays; the Portal returns to the dashboard when the interaction ends.
+- The wake word has no echo cancellation, so audio that itself contains "alexa" can trigger her.
+- Alexa support and the Jarvis wake word run side by side — one mic, two assistants, each on its own phrase.
+
+---
+
+## Presence detection
+
+The **Portal Presence** sensor doesn't run our own detection — it piggybacks on Meta's. `PresenceManager` (Aloha) runs face-presence detection on the Portal's *other* camera and logs a heartbeat (~every 30 s) **only while a person is present**, going silent when the room empties. The app tails logcat for that heartbeat: fresh beats = present, no beat for ~50 s = absent.
+
+- Requires the `READ_LOGS` permission (ADB-grantable only).
+- Independent of the app's own camera — works with the camera feature off.
+
+### Enhanced presence (camera + sound)
+
+Meta's face detection gets unreliable in **low light** — a person in a dark room can read as absent. Turn on **Enhanced presence (also use sound)** (Settings → Display & Presence) and the **Portal Presence** sensor reports occupied when the camera sees someone **or** the ambient sound rises above a threshold you set. After a noise, it holds "present" for ~60 s (people are only intermittently audible), so the odd footstep or word keeps the room occupied.
+
+- The **Sound threshold** is on the same 0–100 scale as the **Sound Level** sensor. The settings screen shows a **live readout** next to it — glance at it while the room is quiet vs. occupied and set the threshold in the gap (quiet rooms usually sit around 5).
+- Uses the microphone (`RECORD_AUDIO`, already granted); needs Presence Detection on.
+
+## Screen control
+
+| Action | Mechanism |
+|---|---|
+| **Wake** | `PowerManager` wake lock (`WAKE_LOCK` only) |
+| **Sleep** | `AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN` (no device admin) |
+
+Plus an on-device idle timer (**Screen Timeout** / **…Minutes**) that sleeps the screen independently of HA.
+
+---
+
+## Per-model notes
+
+- **Temperature / RGB / sensors** are hardware-dependent and auto-detected — entities only appear if the sensor exists.
+- **Camera aspect ratio** differs by Portal+ generation — `aloha` streams square (1:1, no config), `cipher` streams 480×640 and needs the one-line 4:3 SAR filter in the HA card. See [Portal+ camera aspect ratio](#portal-camera-aspect-ratio).
+- **Camera orientation**: both Portal+ models have a **fixed camera** (it doesn't pivot with the screen), so accelerometer auto-rotate is disabled for them and the stream uses a fixed rotation — upright out of the box (`aloha` rot 0, `cipher` rot 90), adjustable with the in-app **Rotate** button. Auto-rotate still applies to non-Portal+ models.
+- **Portal+ 2nd gen (`cipher`)**: its accelerometer is mounted on the **moving screen arm**, which heavily dampens taps — so the tap threshold is auto-scaled, the gesture is relabelled **"Tilt"**, and its dominant (Z) axis reports **up/down** instead of front/back. All automatic — no config.
+- **Intercom**: **every model can be two-way.** Out of the box a **Portal+** has Meta's "Hey Alexa" detector holding the far-field mic, which makes it receive-only — the provisioner frees it (`--free-mic`), and **provisioning Alexa (`--alexa` / `-Alexa`) frees it automatically** (the bridge supplies its own wake word instead). Capability is measured automatically at startup either way — see [Intercom](#intercom-portal-to-portal-announce).
+
+---
+
+## Permissions
+
+All ADB-granted (they can't be granted from the Portal UI). The provisioner (`provision.ps1` on Windows, `provision.sh` on macOS/Linux) does these for you:
+
+| Permission / app-op | Used for |
+|---|---|
+| `WRITE_SECURE_SETTINGS` | auto-enable the screen-sleep accessibility service |
+| `CAMERA` | streaming / motion |
+| `RECORD_AUDIO` | ambient sound-level sensor + intercom microphone |
+| `READ_LOGS` | Portal presence sensor |
+| `WRITE_SETTINGS` (app-op) | read/set brightness |
+| `SYSTEM_ALERT_WINDOW` (app-op) | background camera access + floating intercom buttons |
+
+---
+
+## Building from source
+
+- **Android Studio** (or Gradle CLI) — JDK 17.
+- Kotlin 2.0.20, AGP 8.3.2, Gradle 8.6, `compileSdk 35`, `minSdk 28`.
+- RTSP camera uses `com.github.pedroSG94:RTSP-Server:1.3.0` + `com.github.pedroSG94.RootEncoder:library:2.4.6` (this exact pair) via JitPack.
+
+```bash
+./gradlew assembleRelease
+```
+
+**Signing:** release builds read `keystore.properties` (in the project root) for the signing key. That file and the `.keystore` are **git-ignored** — keep your own; losing them means you can't sign updates that install over an existing install.
+
+---
+
+## Project structure
+
+```
+app/src/main/java/com/aeonos/portalha/
+  BridgeService.kt      Foreground service: MQTT, camera authority, orchestration
+  HaDiscovery.kt        MQTT discovery payloads / topics for every entity
+  RtspStreamer.kt       Headless RTSP H.264 server (RootEncoder)
+  CameraStream.kt       Camera capture for motion detection
+  MotionDetector.kt     Frame-diff motion detection
+  SensorBridge.kt       Light / RGB / temp / accelerometer / tap-tilt
+  SoundMonitor.kt       Ambient sound level + shared warm mic for the intercom
+  Intercom.kt           Portal-to-Portal audio intercom (presence/lock/audio over MQTT)
+  AssistantToolProvider.kt   Voice-assistant (Jarvis) tool provider: screen/camera/presence + Home Assistant control
+  IntercomOverlay.kt    Floating push-to-talk button (named, draggable)
+  IntercomSettingsActivity.kt / IntercomButtonsActivity.kt   Intercom config UI
+  PresenceMonitor.kt    Tails Meta's PresenceManager heartbeat
+  ScreenControl.kt / ScreenAccessibility.kt   Sleep/wake
+  MediaKeepAlive.kt     Stops the launcher idle-kicking the app
+  TonePlayer.kt         Doorbell / alert tones
+  DashboardActivity.kt  Full-screen HA WebView (kiosk)
+  MainActivity.kt       Settings / configuration UI
+  Prefs.kt              SharedPreferences wrapper
+provision.ps1           One-shot device setup for Windows (install + permissions + launcher)
+provision.sh            One-shot device setup for macOS / Linux (same steps)
+SETUP.md                Detailed setup & MQTT topics
+CHANGELOG.md            Version history (features + bugfixes)
+```
+
+---
+
+## Troubleshooting
+
+- **Camera "1 frame then freezes" in HA** → use the `ffmpeg:…#video=copy` URL (drops the AAC track); ensure the app is recent (Constrained Baseline profile).
+- **No screen sleep** → `WRITE_SECURE_SETTINGS` not granted; run the provisioner (`provision.ps1` / `provision.sh`), or use the single grant in SETUP.md.
+- **Camera "can't open from background"** → re-open the dashboard app (it re-acquires the camera in the foreground).
+- **Provision says "no device"** → check `adb devices`, re-plug, accept the USB-debugging prompt.
+
+---
 
 ## License
 
-Same as upstream: [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0/)
+**PolyForm Noncommercial License 1.0.0** — see [LICENSE](LICENSE).
+
+You're free to use, modify, and share this for **noncommercial** purposes (personal, hobby, education, non-profit). **All commercial use is reserved** to the copyright holder — © 2026 RoadRunner-1024. For a commercial license, contact the author.

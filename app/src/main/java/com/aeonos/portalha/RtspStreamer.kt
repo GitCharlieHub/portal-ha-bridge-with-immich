@@ -2,10 +2,10 @@ package com.aeonos.portalha
 
 import android.content.Context
 import android.media.MediaCodecInfo
+import android.media.MediaRecorder
 import android.util.Log
 import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.video.CameraHelper
-import com.pedro.encoder.utils.CodecUtil
 import com.pedro.library.util.sources.audio.MicrophoneSource
 import com.pedro.library.util.sources.audio.NoAudioSource
 import com.pedro.library.util.sources.video.Camera2Source
@@ -20,14 +20,14 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     companion object { private const val TAG = "PortalHA" }
 
     private var stream: RtspServerStream? = null
-
-    // Reflects the library's actual streaming state, not a cached flag, so that
-    // if Portal revokes the camera mid-stream the watchdog sees the truth.
-    val isStreaming: Boolean get() = stream?.isStreaming == true
-
-    // Called by BridgeService when the stream drops unexpectedly so it can
-    // schedule a restart without waiting for the next onResume().
-    var onDropped: (() -> Unit)? = null
+    @Volatile var isStreaming = false
+        private set
+    // Fired when the stream is fatally dead while isStreaming is still true —
+    // the server socket failed to bind (EADDRINUSE after a restart) or a client
+    // asked for video the encoder never produced (camera refused/never opened).
+    // BridgeService uses it to flag recovery; without it these states were
+    // invisible and the stream stayed dead until an app restart.
+    @Volatile var onStreamDead: ((String) -> Unit)? = null
     // Manual base offset (deg, 0/90/180/270) from the ROTATE button. 0 = camera
     // native landscape. Corrects the base on top of the accelerometer auto value.
     @Volatile var rotationOffset = 0
@@ -63,18 +63,33 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
             // (empty here), so build the source explicitly on FRONT.
             val video = Camera2Source(context)
             if (video.getCameraFacing() != CameraHelper.Facing.FRONT) video.switchCamera()
-            // SoundMonitor is stopped before this path, leaving the mic exclusively
-            // available to the stream. Video-only mode keeps using NoAudioSource.
-            val audio = if (withAudio) MicrophoneSource(RtspAudioConfig.audioSource)
+            // NoAudioSource does NOT open the mic — critical so the RTSP stream
+            // doesn't hold the mic and starve/garble Portal calls (and so it doesn't
+            // fight the SoundMonitor). prepareAudio() is still called below to satisfy
+            // startStream(); that leaves an empty AAC track in the SDP (harmless;
+            // HA/WebRTC uses #video=copy). withAudio kept for a future real mic-share.
+            val audio = if (withAudio) MicrophoneSource(MediaRecorder.AudioSource.VOICE_RECOGNITION)
                         else NoAudioSource()
             val s = RtspServerStream(context, port, this, video, audio)
             stream = s
-            // The Portal's Qualcomm AAC encoder emits malformed frames. Keep the
-            // proven hardware H.264 path, but use Android's software AAC encoder.
-            s.forceCodecType(CodecUtil.CodecType.HARDWARE, RtspAudioConfig.codecType)
             // Pass the LANDSCAPE capture dims + rotation; prepareVideo swaps the
             // ENCODER size itself for 90/270 (don't pre-swap — that double-swaps).
+            // NOTE: portrait still letterboxes because the Portal front cam can only
+            // capture landscape; the camera-fill is a library limitation. Fine for
+            // a landscape-mounted Portal (auto-rotate keeps it landscape = no bars).
             val rot = currentRotation()
+            // The squashing front cam scales its true FOV into whatever surface we ask
+            // for. The two Portal+ models differ:
+            //   aloha  - ~SQUARE FOV: encode 480x480 -> displays 1:1 natively, correct
+            //            in any player with no override.
+            //   cipher - 4:3 FOV but the cam is portrait-mounted, so making it upright
+            //            (rot=90) forces the content into a 480x640 portrait buffer
+            //            (the 4:3 scene squashed into 3:4). The stream is correct only
+            //            when displayed at 4:3. RootEncoder can't bake that (no SAR
+            //            setter; its scale modes only letterbox) so the 4:3 is applied
+            //            viewer-side: HA WebRTC card adds a SAR via go2rtc's ffmpeg
+            //            (#raw=-bsf:v h264_metadata=sample_aspect_ratio=16/9); VLC uses
+            //            its 4:3 setting. TODO: a DIY encoder pipeline could stamp SAR.
             val corrected = squashedFrontCam && width * 9 == height * 16
             val isCipher = android.os.Build.DEVICE.equals("cipher", true)
             val encW = if (corrected) (if (isCipher) 640 else 480) else width
@@ -95,6 +110,7 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
             val audioOk = s.prepareAudio(16000, false, 64_000)
             if (videoOk && audioOk) {
                 s.startStream()
+                isStreaming = true
                 Log.i(TAG, "RTSP streaming on ${url()} ${encW}x${encH} rot=$rot squash=$squashedFrontCam (audio=$withAudio)")
                 true
             } else {
@@ -114,12 +130,16 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     // so only call on an actual orientation change, not continuously.
     fun restart(): Boolean {
         stop()
-        runCatching { Thread.sleep(350) }   // let the accept thread die + port release
+        // 350ms sometimes lost the race — the old accept thread hadn't released
+        // port 8554 yet and the new bind died with EADDRINUSE (which also leaks
+        // the port in-process). 700ms + the BridgeService dead-stream backoff
+        // retries cover the tail.
+        runCatching { Thread.sleep(700) }   // let the accept thread die + port release
         return start(baseWidth, baseHeight, baseFps, baseBitrate, baseAudio)
     }
 
     fun stop() {
-        onDropped = null   // prevent the drop callback firing during an intentional stop
+        isStreaming = false
         runCatching { stream?.stopStream() }
         stream = null
         Log.i(TAG, "RTSP streaming stopped")
@@ -129,7 +149,12 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     override fun onConnectionSuccess() { Log.i(TAG, "rtsp client connected") }
     override fun onConnectionFailed(reason: String) {
         Log.w(TAG, "rtsp failed: $reason")
-        onDropped?.invoke()
+        // Only the two known-fatal signatures kill the stream; per-client
+        // handshake noise must not trigger restarts of a healthy stream.
+        if (isStreaming &&
+            (reason.contains("Server creation failed") || reason.contains("video info is null"))) {
+            onStreamDead?.invoke(reason)
+        }
     }
     override fun onNewBitrate(bitrate: Long) { }
     override fun onDisconnect() { Log.i(TAG, "rtsp client disconnected") }

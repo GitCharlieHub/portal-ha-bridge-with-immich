@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Portal HA Bridge</string>
-    <string name="accessibility_label">Portal HA Bridge</string>
-    <string name="accessibility_description">Provides screen sleep via the global lock action. Does not read screen content or intercept any input.</string>
+    <string name="accessibility_label">Portal HA Screen Control</string>
+    <string name="accessibility_description">Allows Portal HA Bridge to turn the screen off on command from Home Assistant. It does not read or interact with screen content.</string>
+    <!-- The portal-assistant ("Jarvis") tool declarations + summary are declared as INLINE literal
+         android:value strings on the AssistantToolProvider <provider> in AndroidManifest.xml, NOT as
+         @string/ resources here — the assistant reads them via metaData.getString(), which returns null
+         for a @string/ reference (it comes through as a resource id). Inline literals always read back. -->
 </resources>

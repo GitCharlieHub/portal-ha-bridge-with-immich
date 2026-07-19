@@ -4,22 +4,59 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.net.http.SslError
 import android.os.Bundle
-import android.view.View
 import android.webkit.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.GravityCompat
 import androidx.drawerlayout.widget.DrawerLayout
+import android.view.MotionEvent
+import android.view.View
+import android.widget.ArrayAdapter
 import android.widget.Button
-import java.net.URI
+import android.widget.Spinner
+import android.widget.TextView
+import android.widget.Toast
 
 class DashboardActivity : AppCompatActivity() {
 
-    private enum class Mode { IMMICH_FRAME, HA_DASHBOARD }
-    private var currentMode = Mode.IMMICH_FRAME
+    companion object {
+        @Volatile private var instance: DashboardActivity? = null
+
+        // Snapshot the live dashboard as a bitmap, so the wake handoff can freeze it
+        // on-screen (an overlay) while the assistant is invisibly brought forward to
+        // grab the mic — the switch to the assistant is never seen. Uses PixelCopy:
+        // it reads back the composited GPU frame, so the copy is pixel-identical to
+        // the screen. (View.draw() software rendering distorted CSS-transformed
+        // WebView elements — e.g. the Immich kiosk clock came out squashed.)
+        // Async; calls back on the main thread with null if capture isn't possible.
+        fun snapshot(cb: (android.graphics.Bitmap?) -> Unit) {
+            val act = instance
+            if (act == null || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O) {
+                cb(null); return
+            }
+            runCatching {
+                val v = act.findViewById<View>(android.R.id.content)
+                if (v == null || v.width <= 0 || v.height <= 0) { cb(null); return }
+                val bmp = android.graphics.Bitmap.createBitmap(
+                    v.width, v.height, android.graphics.Bitmap.Config.ARGB_8888)
+                android.view.PixelCopy.request(act.window, bmp, { result ->
+                    cb(if (result == android.view.PixelCopy.SUCCESS) bmp else null)
+                }, android.os.Handler(android.os.Looper.getMainLooper()))
+            }.onFailure { cb(null) }
+        }
+    }
 
     private lateinit var webView: WebView
     private lateinit var drawer: DrawerLayout
     private lateinit var prefs: Prefs
+    private var externalBridgeInstalled = false
+    private var lastLoadedDashboardUrl = ""
+
+    // Intercom drawer controls. peerIds is kept aligned with the spinner rows;
+    // index 0 is "Everyone" (broadcast → null target), the rest are peer ids.
+    private lateinit var spinnerTarget: Spinner
+    private lateinit var tvIntercomStatus: TextView
+    private lateinit var btnAnnounce: Button
+    private var peerIds: List<String?> = listOf(null)
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,6 +76,12 @@ class DashboardActivity : AppCompatActivity() {
         drawer = findViewById(R.id.drawer_layout)
         webView = findViewById(R.id.web_view)
 
+        // Kiosk: never draw scrollbars — they flash down the right edge whenever the
+        // WebView is re-laid-out (e.g. returning from the assistant handoff).
+        webView.isVerticalScrollBarEnabled = false
+        webView.isHorizontalScrollBarEnabled = false
+        webView.overScrollMode = View.OVER_SCROLL_NEVER
+
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -53,75 +96,49 @@ class DashboardActivity : AppCompatActivity() {
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest) {
-                // Grant camera/mic permissions only when the HA dashboard is active
-                // and the requesting origin matches the configured HA host.
-                // ImmichFrame is a photo viewer — it has no legitimate need for
-                // the device camera or microphone.
-                val origin = request.origin.toString().trimEnd('/')
-                val haOrigin = haOrigin()
-                if (currentMode == Mode.HA_DASHBOARD && haOrigin != null &&
-                        (origin == haOrigin || origin.startsWith("$haOrigin/"))) {
-                    request.grant(request.resources)
-                } else {
-                    android.util.Log.w("PortalHA",
-                        "Denied WebView permission request from $origin (mode=$currentMode haOrigin=$haOrigin)")
-                    request.deny()
-                }
+                // Grant media permissions so HA calls work inside the WebView
+                request.grant(request.resources)
             }
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                view.evaluateJavascript(alwaysVisibleJs(), null)
+            }
+            override fun onPageFinished(view: WebView, url: String) {
+                view.evaluateJavascript(alwaysVisibleJs(), null)
+            }
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-                // Proceed only for addresses that are definitively on the local network
-                // (RFC 1918, link-local, localhost, .local mDNS). An external host with
-                // a bad certificate is rejected — the user likely has a URL typo.
-                if (isLocalUrl(error.url ?: "")) {
-                    handler.proceed()
-                } else {
-                    handler.cancel()
-                    showPlaceholder(
-                        "SSL certificate error for an external host.\n" +
-                        "Check the URL in Settings — only local-network addresses\n" +
-                        "(192.168.x.x, 10.x.x.x, hostname.local …) are accepted."
-                    )
-                }
+                handler.proceed() // Accept self-signed certs for local HA
             }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) showPlaceholder("Failed to load — check the URL in Settings.")
+                if (request.isForMainFrame) showPlaceholder(
+                    "Failed to load.<br><br>Swipe in from the <b>left edge</b> to open the menu, " +
+                    "then tap <b>Settings</b> to check your Home Assistant URL.")
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 // The WebView renderer died (usually OOM on a long-running
                 // dashboard). Rebuild the activity instead of crashing the app.
-                android.util.Log.w("PortalHA", "WebView renderer gone (crash=${detail.didCrash()}) — recreating")
+                android.util.Log.w("PortalHA", "WebView renderer gone (crash=${detail.didCrash()}) — recreating dashboard")
                 recreate()
                 return true
             }
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                 val url = request.url.toString()
                 if (url.startsWith("http://") || url.startsWith("https://")) return false
-                // Only forward intent:// URIs — they let HA cards launch Portal apps.
-                // All other non-http(s) schemes (market://, settings://, file://, etc.)
-                // are blocked silently; a local dashboard page has no legitimate reason
-                // to trigger them, and they're a vector for page-to-app attacks.
-                if (!url.startsWith("intent:")) {
-                    android.util.Log.w("PortalHA", "Blocked non-http(s)/non-intent scheme: $url")
-                    return true
-                }
+                // intent:// and other app schemes — WebView drops these silently,
+                // so hand them to Android (lets HA cards launch Portal apps).
                 runCatching {
-                    Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                        .also { it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
-                        .let { startActivity(it) }
+                    val intent =
+                        if (url.startsWith("intent:")) Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
+                        else Intent(Intent.ACTION_VIEW, request.url)
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
                 }.onFailure {
-                    android.util.Log.w("PortalHA", "Could not launch intent: ${it.message}")
+                    android.util.Log.w("PortalHA", "Could not launch $url: ${it.message}")
                 }
                 return true
             }
-        }
-
-        // Default to ImmichFrame; restore saved mode on recreate (e.g. renderer crash).
-        currentMode = Mode.IMMICH_FRAME
-        savedInstanceState?.getString("mode")?.let {
-            currentMode = if (it == "HA_DASHBOARD") Mode.HA_DASHBOARD else Mode.IMMICH_FRAME
         }
 
         findViewById<Button>(R.id.btn_open_settings).setOnClickListener {
@@ -129,88 +146,24 @@ class DashboardActivity : AppCompatActivity() {
             startActivity(Intent(this, MainActivity::class.java))
         }
 
-        // Toggle between ImmichFrame and HA dashboard. Always visible so the
-        // user can switch regardless of whether both URLs are configured.
-        findViewById<Button>(R.id.btn_toggle_mode).setOnClickListener {
-            drawer.closeDrawers()
-            currentMode = if (currentMode == Mode.IMMICH_FRAME) Mode.HA_DASHBOARD else Mode.IMMICH_FRAME
-            updateModeButton()
-            loadCurrentMode()
-        }
-
         findViewById<Button>(R.id.btn_reload).setOnClickListener {
             drawer.closeDrawers()
-            loadCurrentMode()
+            loadDashboard()
         }
 
-        updateModeButton()
-        loadCurrentMode()
+        setupIntercom()
 
-        // First run (nothing configured yet): drop straight into Settings.
-        if (savedInstanceState == null && prefs.immichFrameUrl.isBlank() && prefs.haUrl.isBlank()) {
+        instance = this
+        loadDashboard()
+
+        // First run (nothing configured yet): drop straight into Settings rather
+        // than showing the empty dashboard placeholder. Only on a genuine fresh
+        // create — savedInstanceState guards against config-change recreation,
+        // and onCreate (not onResume) means backing out of Settings won't loop.
+        if (savedInstanceState == null && selectedDashboardUrl().isBlank()) {
             startActivity(Intent(this, MainActivity::class.java))
         }
     }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        super.onSaveInstanceState(outState)
-        outState.putString("mode", currentMode.name)
-    }
-
-    // Toggle button is always shown; its label reflects the mode you'll switch TO.
-    private fun updateModeButton() {
-        val btn = findViewById<Button>(R.id.btn_toggle_mode)
-        btn.text = if (currentMode == Mode.IMMICH_FRAME) "HA Dashboard" else "Photo Frame"
-    }
-
-    private fun loadCurrentMode() {
-        when (currentMode) {
-            Mode.IMMICH_FRAME -> {
-                val url = prefs.immichFrameUrl.trim()
-                if (url.isBlank()) {
-                    showPlaceholder("ImmichFrame URL not set.\nSwipe from the left edge to open Settings.")
-                } else {
-                    webView.loadUrl(normalise(url))
-                }
-            }
-            Mode.HA_DASHBOARD -> {
-                val url = prefs.haUrl.trim()
-                if (url.isBlank()) {
-                    showPlaceholder("Home Assistant URL not set.\nSwipe from the left edge to open Settings.")
-                } else {
-                    webView.loadUrl(normalise(url))
-                }
-            }
-        }
-    }
-
-    // Returns scheme+host+port for the configured HA URL, used to scope WebView
-    // permission grants. Returns null if the URL is blank or unparseable.
-    private fun haOrigin(): String? {
-        val url = prefs.haUrl.trim().ifBlank { return null }
-        return runCatching {
-            val u = URI(if (url.startsWith("http")) url else "http://$url")
-            buildString {
-                append(u.scheme ?: "http")
-                append("://")
-                append(u.host ?: return null)
-                if (u.port > 0) append(":${u.port}")
-            }
-        }.getOrNull()
-    }
-
-    // True for RFC 1918, link-local, localhost, and .local mDNS addresses.
-    private fun isLocalUrl(url: String): Boolean = runCatching {
-        val host = URI(url).host ?: return false
-        host == "localhost" ||
-        host == "127.0.0.1" ||
-        host == "::1" ||
-        host.endsWith(".local") ||
-        host.matches(Regex("""^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$""")) ||
-        host.matches(Regex("""^172\.(1[6-9]|2\d|30|31)\.\d{1,3}\.\d{1,3}$""")) ||
-        host.matches(Regex("""^192\.168\.\d{1,3}\.\d{1,3}$""")) ||
-        host.matches(Regex("""^169\.254\.\d{1,3}\.\d{1,3}$"""))
-    }.getOrDefault(false)
 
     // Hide the status/navigation bars for a full-screen kiosk view. STICKY so a
     // swipe only reveals them briefly, then they auto-hide. (Deprecated flags, but
@@ -233,25 +186,169 @@ class DashboardActivity : AppCompatActivity() {
         if (hasFocus) enableImmersive()
     }
 
+    override fun onPause() {
+        super.onPause()
+        // Hide the floating talk buttons when the dashboard isn't in front.
+        BridgeService.setDashboardForeground(false)
+    }
+
     override fun onResume() {
         super.onResume()
+        instance = this
         enableImmersive()
+        // Floating talk buttons are shown only while the dashboard is in front.
+        BridgeService.setDashboardForeground(true)
+        // Re-acquire the camera if another app (e.g. the Portal launcher) took
+        // it while we were in the background.
         BridgeService.ensureCamera(this)
-        // Reload if the active mode's URL changed while we were in Settings.
-        val targetUrl = when (currentMode) {
-            Mode.IMMICH_FRAME -> prefs.immichFrameUrl
-            Mode.HA_DASHBOARD -> prefs.haUrl
-        }
-        val current = webView.url ?: ""
-        if (targetUrl.isNotEmpty() && !current.startsWith(normalise(targetUrl).trimEnd('/'))) {
-            loadCurrentMode()
+        // Reload if the selected dashboard target changed in settings.
+        val target = selectedDashboardUrl()
+        if (target.isNotEmpty() && target != lastLoadedDashboardUrl) {
+            loadDashboard()
         }
     }
 
-    private fun normalise(url: String) = when {
-        url.startsWith("http://") || url.startsWith("https://") -> url
-        else -> "http://$url"
+    // ── Intercom (push-to-announce) ───────────────────────────────────────────
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupIntercom() {
+        spinnerTarget = findViewById(R.id.spinner_target)
+        tvIntercomStatus = findViewById(R.id.tv_intercom_status)
+        btnAnnounce = findViewById(R.id.btn_announce)
+        val btn = btnAnnounce
+
+        refreshIntercom()
+
+        // Hold to talk: press streams the mic, release stops.
+        btn.setOnTouchListener { v, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    val target = peerIds.getOrNull(spinnerTarget.selectedItemPosition)
+                    if (BridgeService.intercomStartTalk(target)) {
+                        (v as Button).text = "● Broadcasting…"
+                        v.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFFE53935.toInt())
+                    } else {
+                        val busy = BridgeService.intercomBusyName()
+                        Toast.makeText(this,
+                            busy?.let { "Busy — $it is speaking" } ?: "Can't announce (mic unavailable)",
+                            Toast.LENGTH_SHORT).show()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    BridgeService.intercomStopTalk()
+                    (v as Button).text = "Hold to Announce"
+                    v.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF3949AB.toInt())
+                    true
+                }
+                else -> false
+            }
+        }
+
+        // Refresh the online-Portal list each time the drawer is opened.
+        drawer.addDrawerListener(object : DrawerLayout.SimpleDrawerListener() {
+            override fun onDrawerOpened(drawerView: View) { refreshIntercom() }
+        })
     }
+
+    private fun refreshIntercom() {
+        val canTx = BridgeService.intercomCanTransmit()
+        val peers = BridgeService.intercomPeers()
+        val labels = ArrayList<String>().apply {
+            add("Everyone"); peers.forEach { add(it.name) }
+        }
+        peerIds = ArrayList<String?>().apply { add(null); peers.forEach { add(it.id) } }
+
+        val prev = spinnerTarget.selectedItemPosition
+        spinnerTarget.adapter = ArrayAdapter(this, R.layout.spinner_item_light, labels).apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+        if (prev in labels.indices) spinnerTarget.setSelection(prev)
+
+        // Receive-only Portals (system holds the mic) can't send — disable the
+        // controls and explain, but still show who's online (they can hear).
+        btnAnnounce.isEnabled = canTx
+        btnAnnounce.alpha = if (canTx) 1f else 0.5f
+        btnAnnounce.text = if (canTx) "Hold to Announce" else "Receive-only"
+        spinnerTarget.isEnabled = canTx
+        spinnerTarget.alpha = if (canTx) 1f else 0.5f
+
+        val busy = BridgeService.intercomBusyName()
+        tvIntercomStatus.text = when {
+            !canTx -> "Receive-only on this Portal — the microphone is reserved by the system. " +
+                "You'll still hear announcements from other Portals."
+            busy != null -> "$busy is speaking…"
+            peers.isEmpty() -> "No other Portals online yet."
+            else -> "${peers.size} Portal${if (peers.size == 1) "" else "s"} online."
+        }
+    }
+
+    private fun loadDashboard() {
+        val url = selectedDashboardUrl()
+        configureExternalBridge()
+        if (url.isEmpty()) {
+            showPlaceholder(
+                "Swipe in from the <b>left edge</b> to open the menu, " +
+                "then tap <b>Settings</b> to enter your Home Assistant or ImmichFrame URL.")
+        } else {
+            lastLoadedDashboardUrl = url
+            webView.loadUrl(url)
+        }
+    }
+
+    private fun selectedDashboardUrl(): String {
+        return if (ImmichFrameDashboard.isEnabled(prefs.immichFrameEnabled, prefs.immichFrameUrl)) {
+            ImmichFrameDashboard.buildUrl(prefs.immichFrameUrl, prefs.immichFrameAuthSecret)
+        } else {
+            prefs.haUrl.trim().takeIf { it.isNotEmpty() }?.let { ImmichFrameDashboard.normalise(it) } ?: ""
+        }
+    }
+
+    private fun configureExternalBridge() {
+        val immichMode = ImmichFrameDashboard.isEnabled(prefs.immichFrameEnabled, prefs.immichFrameUrl)
+        if (immichMode || prefs.haToken.isBlank()) {
+            if (externalBridgeInstalled) {
+                webView.removeJavascriptInterface("externalApp")
+                externalBridgeInstalled = false
+            }
+            return
+        }
+
+        if (!externalBridgeInstalled) {
+            // Speak HA's frontend "external app" protocol so the dashboard treats us as a native
+            // wrapper (native settings entry + working voice button + no-logout auth). CAUTION: once
+            // window.externalApp exists, the frontend routes AUTH through us (getExternalAuth), so it
+            // must not be exposed while the WebView is showing ImmichFrame.
+            webView.addJavascriptInterface(HaExternalBridge(this, webView, prefs), "externalApp")
+            externalBridgeInstalled = true
+        }
+    }
+
+    /**
+     * Kiosk lie: make the page believe it is ALWAYS visible. When the assistant
+     * takes the foreground during a wake handoff, Android tells the page it's
+     * hidden and HA's frontend tears down camera streams (then visibly reloads
+     * them on return). Spoofing document.hidden/visibilityState and swallowing
+     * the visibility events (capture phase, registered before HA's bundle loads)
+     * keeps the streams connected across the handoff — no reload.
+     */
+    private fun alwaysVisibleJs(): String = """
+        (function () {
+          if (window.__phaAlwaysVisible) return; window.__phaAlwaysVisible = true;
+          try {
+            Object.defineProperty(Document.prototype, 'hidden',
+              { get: function () { return false; }, configurable: true });
+            Object.defineProperty(Document.prototype, 'visibilityState',
+              { get: function () { return 'visible'; }, configurable: true });
+          } catch (e) {}
+          ['visibilitychange', 'webkitvisibilitychange', 'pagehide', 'freeze']
+            .forEach(function (t) {
+              var swallow = function (e) { e.stopImmediatePropagation(); };
+              window.addEventListener(t, swallow, true);
+              document.addEventListener(t, swallow, true);
+            });
+        })();
+    """.trimIndent()
 
     private fun showPlaceholder(message: String) {
         // Must use loadDataWithBaseURL, not loadData: loadData treats the payload
@@ -273,5 +370,10 @@ class DashboardActivity : AppCompatActivity() {
             webView.canGoBack() -> webView.goBack()
             else -> super.onBackPressed()
         }
+    }
+
+    override fun onDestroy() {
+        if (instance === this) instance = null
+        super.onDestroy()
     }
 }

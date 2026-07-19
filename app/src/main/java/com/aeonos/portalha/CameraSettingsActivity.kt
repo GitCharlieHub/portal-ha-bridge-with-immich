@@ -125,25 +125,16 @@ class CameraSettingsActivity : AppCompatActivity() {
         btnRotate.visibility = if (serviceOn) View.VISIBLE else View.GONE
         btnRotate.text = "Rotate Stream (currently ${prefs.streamRotation}°)"
 
-        if (serviceOn && (prefs.streamEnabled || prefs.motionEnabled)) {
+        if (serviceOn && prefs.streamEnabled) {
             val ip = BridgeService.localIp() ?: "<device-ip>"
-            tvCameraUrl.text = buildString {
-                if (prefs.streamEnabled) {
-                    append("RTSP stream (WebRTC card for HA):\n\n")
-                    append("type: custom:webrtc-camera\n")
-                    append("url: 'ffmpeg:rtsp://$ip:8554/#video=copy'\n\n")
-                    append("Raw RTSP (VLC etc.): rtsp://$ip:8554/\n")
-                    append("Note: RTSP stream has no password.\n")
-                }
-                if (prefs.streamEnabled && prefs.motionEnabled) append("\n")
-                if (prefs.motionEnabled) {
-                    val token = prefs.mjpegToken
-                    append("MJPEG stream (Frigate):\n\n")
-                    append("http://stream:$token@$ip:8080/\n\n")
-                    append("Username: stream\n")
-                    append("Password: $token")
-                }
-            }
+            tvCameraUrl.text =
+                "Home Assistant — use the WebRTC Camera\n" +
+                "card (custom:webrtc-camera). Add a card:\n\n" +
+                "type: custom:webrtc-camera\n" +
+                "url: 'ffmpeg:rtsp://$ip:8554/#video=copy'\n\n" +
+                "#video=copy drops the audio track WebRTC\n" +
+                "can't decode (prevents the 1-frame freeze).\n\n" +
+                "Raw RTSP (VLC etc.): rtsp://$ip:8554/"
             tvCameraUrl.visibility = View.VISIBLE
         } else {
             tvCameraUrl.visibility = View.GONE

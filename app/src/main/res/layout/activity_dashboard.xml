@@ -3,48 +3,39 @@
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/drawer_layout"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:fitsSystemWindows="false">
+    android:layout_height="match_parent">
 
-    <!-- Full-screen WebView for the dashboard/photo-frame content -->
+    <!-- Main content -->
     <WebView
         android:id="@+id/web_view"
         android:layout_width="match_parent"
-        android:layout_height="match_parent" />
+        android:layout_height="match_parent"
+        android:background="#000000" />
 
-    <!-- Left-edge drawer: swipe from the left to reveal these controls -->
+    <!-- Left drawer (swipe from left edge to open) -->
     <LinearLayout
-        android:layout_width="200dp"
+        android:layout_width="260dp"
         android:layout_height="match_parent"
         android:layout_gravity="start"
-        android:background="#1c1c1c"
+        android:background="#1A1A2E"
         android:orientation="vertical"
-        android:padding="16dp"
-        android:fitsSystemWindows="true">
+        android:padding="28dp">
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="Portal HA Bridge"
-            android:textColor="#ffffff"
-            android:textSize="16sp"
+            android:textColor="#FFFFFF"
+            android:textSize="18sp"
             android:textStyle="bold"
-            android:layout_marginBottom="20dp" />
-
-        <Button
-            android:id="@+id/btn_toggle_mode"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="HA Dashboard"
-            android:backgroundTint="#2D4A2D"
-            android:layout_marginBottom="12dp" />
+            android:layout_marginBottom="32dp" />
 
         <Button
             android:id="@+id/btn_open_settings"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Settings"
-            android:backgroundTint="#333333"
+            android:backgroundTint="#3A3A5C"
             android:layout_marginBottom="12dp" />
 
         <Button
@@ -52,7 +43,45 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:text="Reload"
-            android:backgroundTint="#333333" />
+            android:backgroundTint="#3A3A5C" />
+
+        <!-- Intercom -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#33FFFFFF"
+            android:layout_marginTop="28dp"
+            android:layout_marginBottom="20dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Intercom"
+            android:textColor="#AAB0FF"
+            android:textSize="13sp"
+            android:layout_marginBottom="8dp" />
+
+        <Spinner
+            android:id="@+id/spinner_target"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp" />
+
+        <Button
+            android:id="@+id/btn_announce"
+            android:layout_width="match_parent"
+            android:layout_height="64dp"
+            android:text="Hold to Announce"
+            android:textStyle="bold"
+            android:backgroundTint="#3949AB" />
+
+        <TextView
+            android:id="@+id/tv_intercom_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#888FAA"
+            android:textSize="11sp"
+            android:layout_marginTop="8dp" />
 
     </LinearLayout>
 

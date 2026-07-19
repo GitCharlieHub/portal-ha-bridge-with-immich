@@ -38,12 +38,14 @@ class CameraStream(private val context: Context) {
 
     @Volatile var isActive = false
         private set
+    // Manual stream rotation in degrees (0/90/180/270), set from prefs/UI.
     @Volatile var rotation = 0
     @Volatile private var cameraWanted = false
     @Volatile private var selectedCameraId: String? = null
     @Volatile private var lastFrameMs = 0L
     @Volatile private var openPending = false
 
+    // Frame buffers reused across frames (camera handler thread only)
     private var nv21Buf: ByteArray? = null
     private var rotBuf: ByteArray? = null
 
@@ -54,6 +56,8 @@ class CameraStream(private val context: Context) {
         override fun onCameraAvailable(cameraId: String) {
             if (cameraId == selectedCameraId && cameraWanted && !isActive && !openPending) {
                 openPending = true
+                // Delay before retrying — Portal's system camera does rapid release/acquire
+                // cycles; jumping in immediately causes an on/off flicker loop.
                 handler.postDelayed({
                     openPending = false
                     if (cameraWanted && !isActive) openCamera()
@@ -62,12 +66,18 @@ class CameraStream(private val context: Context) {
             }
         }
         override fun onCameraUnavailable(cameraId: String) {
+            // Don't proactively close — onDisconnected fires if the system
+            // actually evicts us. Portal's camera service often peeks and
+            // releases without disconnecting our session.
             if (cameraId == selectedCameraId) {
                 Log.i(TAG, "Camera $cameraId reported unavailable (another app opened it)")
             }
         }
     }
 
+    // Retry after a failed open — covers the camera still being held by another
+    // app (e.g. the Portal launcher after returning to us) where no availability
+    // transition will ever fire for us.
     private fun scheduleRetry(reason: String) {
         if (!cameraWanted || openPending) return
         openPending = true
@@ -162,6 +172,7 @@ class CameraStream(private val context: Context) {
                             }, handler)
                     } catch (e: CameraAccessException) {
                         Log.w(TAG, "createCaptureSession failed (camera taken): ${e.message}")
+                        // onDisconnected will fire next and clean up cameraDevice
                     }
                 }
                 override fun onDisconnected(camera: CameraDevice) {
@@ -192,6 +203,7 @@ class CameraStream(private val context: Context) {
         val size = w * h * 3 / 2
         val nv21 = nv21Buf?.takeIf { it.size == size } ?: ByteArray(size).also { nv21Buf = it }
 
+        // Copy Y rows (handling row stride padding)
         var pos = 0
         val yBuf = yPlane.buffer
         for (row in 0 until h) {
@@ -200,6 +212,7 @@ class CameraStream(private val context: Context) {
             pos += w
         }
 
+        // Interleave V then U for NV21
         val uBuf = uPlane.buffer
         val vBuf = vPlane.buffer
         for (row in 0 until h / 2) {
@@ -210,6 +223,7 @@ class CameraStream(private val context: Context) {
             }
         }
 
+        // Apply the user-selected stream rotation
         val (data, outW, outH) = rotateNV21(nv21, w, h, rotation)
 
         val yuvImage = YuvImage(data, ImageFormat.NV21, outW, outH, null)
@@ -218,6 +232,8 @@ class CameraStream(private val context: Context) {
         return out.toByteArray()
     }
 
+    // Rotates an NV21 frame clockwise by 90/180/270. Returns the (possibly
+    // swapped) output dimensions; 0 returns the input untouched.
     private fun rotateNV21(src: ByteArray, w: Int, h: Int, rot: Int): Triple<ByteArray, Int, Int> {
         if (rot == 0) return Triple(src, w, h)
         val size = w * h * 3 / 2
@@ -276,6 +292,9 @@ class CameraStream(private val context: Context) {
         }
         closeCamera()
         selectedCameraId = null
+        // Post a final correction at the end of the handler queue.
+        // If onConfigured raced with stop() and set isActive=true / published "ON",
+        // this message runs after it and forces the correct final state.
         handler.post {
             if (!cameraWanted) {
                 isActive = false

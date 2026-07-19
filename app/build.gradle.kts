@@ -22,8 +22,18 @@ android {
         // 28 = Android 9 (Portal+); 29 = Android 10 (Portal / Portal Mini).
         minSdk = 28
         targetSdk = 35
-        versionCode = 24
-        versionName = "1.6.6-immich"
+        versionCode = 38
+        versionName = "1.17.2-immich.1"
+
+        // Portals are ARM — ship only ARM native libs (Vosk/RootEncoder bundle x86 +
+        // x86_64 + mips for emulators, ~20 MB of dead weight on real hardware).
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
+    }
+
+    buildFeatures {
+        buildConfig = true   // exposes BuildConfig.VERSION_NAME for the in-app updater
     }
 
     signingConfigs {
@@ -60,11 +70,16 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.paho.mqtt)
+    testImplementation("junit:junit:4.13.2")
 
     // RTSP server (headless RtspServerStream). Kotlin-2.0-era versions so they
     // build cleanly under our Kotlin 2.0.20 — no metadata hacks.
     implementation("com.github.pedroSG94:RTSP-Server:1.3.0")
     implementation("com.github.pedroSG94.RootEncoder:library:2.4.6")
 
-    testImplementation("junit:junit:4.13.2")
+    // On-device wake word ("hey jarvis") — Vosk speech recognizer with a grammar
+    // limited to the wake phrase. Keyless/offline; the phrase is a config string, so
+    // the wake word is changeable without a new model. The ~40 MB model is downloaded
+    // to filesDir on first enable (keeps the APK small), not bundled.
+    implementation("com.alphacephei:vosk-android:0.3.75")
 }

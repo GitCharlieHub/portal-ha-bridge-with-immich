@@ -1,14 +1,20 @@
-# Gradle build cache and generated outputs
-.gradle/
-build/
-app/build/
-
-# Android Studio / IntelliJ project files
-*.iml
-.idea/
-local.properties
-
-# Keystore (never commit — losing it means losing the ability to update the installed APK)
-*.jks
-*.keystore
+# ── Signing secrets — NEVER share. Keep locally: losing them means you can
+#    never sign an update that installs over the existing app. ──
 keystore.properties
+*.keystore
+*.jks
+
+# Build outputs
+/build
+/app/build
+.gradle/
+*.apk
+
+# Auto-downloaded by provision.ps1 when adb isn't on PATH
+/platform-tools/
+
+# Android Studio / IDE (machine-specific; regenerated on open)
+.idea/
+*.iml
+local.properties
+.DS_Store

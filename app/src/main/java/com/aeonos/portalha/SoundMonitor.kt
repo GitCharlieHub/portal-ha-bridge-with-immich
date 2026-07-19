@@ -28,23 +28,50 @@ class SoundMonitor(
 
     private val running = AtomicBoolean(false)
 
+    // When set (the intercom is announcing), every captured PCM chunk is handed
+    // here too, so the announce streams this SAME continuously-warm mic — no
+    // release/reacquire handoff, no cold-start warmup, no ~1s latency. The callback
+    // runs on the capture thread and must return promptly (pack + publish a frame).
+    @Volatile var frameSink: ((buf: ShortArray, length: Int) -> Unit)? = null
+
+    // Continuous tap for the wake-word detector — fed every captured chunk while the
+    // mic is held (unlike frameSink, which is only attached during an intercom announce).
+    @Volatile var wakeSink: ((buf: ShortArray, length: Int) -> Unit)? = null
+
+    // Audio session id of our current AudioRecord (-1 when not capturing). Lets the
+    // wake handoff tell OUR recording apart from the assistant's in the system's active
+    // recording list, without depending on release/acquire timing.
+    @Volatile var audioSessionId: Int = -1
+        private set
+
+    fun isRunning() = running.get()
+
     fun start() {
+        // Idempotent + safe to re-call after stop() (coexist mode toggles us on/off
+        // live). The CAS guards against two callers double-starting the thread.
+        if (!running.compareAndSet(false, true)) return
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED) {
             Log.w(TAG, "RECORD_AUDIO not granted — sound level disabled. " +
                 "Run: adb shell pm grant ${context.packageName} android.permission.RECORD_AUDIO")
+            running.set(false)
             return
         }
         val minBuf = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
         )
-        if (minBuf <= 0) { Log.w(TAG, "AudioRecord not supported"); return }
+        if (minBuf <= 0) { Log.w(TAG, "AudioRecord not supported"); running.set(false); return }
         val bufSize = minBuf * 4
-        running.set(true)
 
         Thread({
             val am = context.getSystemService(AudioManager::class.java)
-            val buf = ShortArray(bufSize / 2)
+            // Read in SMALL chunks (~40 ms) so the loop revisits the paused flag
+            // frequently and can hand the mic to the intercom within ~40 ms. A big
+            // read blocks the loop for its whole duration, which on a contended
+            // Portal mic delayed the handoff by up to 2 s — long enough to swallow
+            // an entire announce. RMS accumulates across reads, so chunk size only
+            // affects responsiveness, not the published level.
+            val buf = ShortArray(SAMPLE_RATE / 25)   // 640 samples = 40 ms
             var rec: AudioRecord? = null
             var sumSq = 0.0
             var count = 0
@@ -52,7 +79,7 @@ class SoundMonitor(
 
             fun release() {
                 rec?.let { runCatching { it.stop() }; runCatching { it.release() } }
-                rec = null; sumSq = 0.0; count = 0
+                rec = null; audioSessionId = -1; sumSq = 0.0; count = 0
             }
 
             while (running.get()) {
@@ -82,12 +109,15 @@ class SoundMonitor(
                     }
                     runCatching { r.startRecording() }
                     rec = r
+                    audioSessionId = runCatching { r.audioSessionId }.getOrDefault(-1)
                     lastPublish = System.currentTimeMillis()
                     Log.i(TAG, "sound: mic acquired")
                 }
 
                 val n = rec?.read(buf, 0, buf.size) ?: -1
                 if (n > 0) {
+                    frameSink?.invoke(buf, n)   // forward to the intercom if announcing
+                    wakeSink?.invoke(buf, n)    // forward to the wake-word detector if enabled
                     for (i in 0 until n) sumSq += buf[i].toLong() * buf[i]
                     count += n
                     val now = System.currentTimeMillis()

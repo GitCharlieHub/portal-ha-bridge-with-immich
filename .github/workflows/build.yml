@@ -3,7 +3,7 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, 'codex/**']
 
 jobs:
   build:
@@ -27,8 +27,12 @@ jobs:
           /tmp/gradle-dist/gradle-8.6/bin/gradle wrapper --gradle-version 8.6 --distribution-type bin
           chmod +x gradlew
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon
+      - name: Test and build debug APK
+        run: ./gradlew testDebugUnitTest assembleDebug --no-daemon
+
+      - name: Android lint
+        continue-on-error: true
+        run: ./gradlew lintDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

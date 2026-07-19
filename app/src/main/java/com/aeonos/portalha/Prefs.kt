@@ -3,6 +3,18 @@ package com.aeonos.portalha
 import android.content.Context
 import android.content.SharedPreferences
 import android.provider.Settings
+import org.json.JSONArray
+import org.json.JSONObject
+
+// One floating push-to-talk button: a name and the target it announces to
+// ("all" = everyone, otherwise a peer device id), plus its saved screen position
+// (-1 = use a default slot).
+data class IntercomButton(
+    val name: String,
+    val target: String,
+    val x: Int = -1,
+    val y: Int = -1
+)
 
 class Prefs(private val context: Context) {
     private val sp = context.getSharedPreferences("portal_ha", Context.MODE_PRIVATE)
@@ -50,6 +62,14 @@ class Prefs(private val context: Context) {
     var tapThreshold: Float
         get() = sp.getFloat("tap_threshold", 4.0f)
         set(v) = sp.edit().putFloat("tap_threshold", v).apply()
+
+    // Gen-1 Portal+ (API 28) renders Meta's PackageInstaller dialog white-on-white;
+    // the updater flips on "high contrast text" around the install to make it
+    // legible (see Updater). This remembers the user's prior value to restore
+    // afterwards. -1 = nothing pending.
+    var highContrastRestore: Int
+        get() = sp.getInt("high_contrast_restore", -1)
+        set(v) = sp.edit().putInt("high_contrast_restore", v).apply()
 
     // Camera feature toggles. The legacy "camera_enabled" key seeds the defaults
     // so existing installs keep their behavior after upgrading.
@@ -109,6 +129,86 @@ class Prefs(private val context: Context) {
         get() = sp.getBoolean("presence_enabled", false)
         set(v) = sp.edit().putBoolean("presence_enabled", v).apply()
 
+    // Enhanced presence: also count loud-enough ambient sound as "present" — helps
+    // in low light where Meta's camera face-detection gets unreliable. The threshold
+    // is 0–100, same scale as the Sound Level sensor (higher = needs louder sound).
+    var enhancedPresenceEnabled: Boolean
+        get() = sp.getBoolean("enhanced_presence", false)
+        set(v) = sp.edit().putBoolean("enhanced_presence", v).apply()
+
+    var presenceSoundThreshold: Int
+        get() = sp.getInt("presence_sound_threshold", 8)
+        set(v) = sp.edit().putInt("presence_sound_threshold", v.coerceIn(0, 100)).apply()
+
+    // Coexist with an always-on external voice assistant (e.g. rudysev/portal-wake
+    // "hey jarvis", com.portal.wake). The Portal has ONE mic slot, so to let the
+    // assistant hear its wake word we must RELEASE the mic: SoundMonitor stops, the
+    // Sound Level sensor + sound-based enhanced presence go away, and the intercom
+    // captures on-demand only while you're announcing (the assistant's own arbiter
+    // yields for those few seconds and reclaims when you let go).
+    var coexistVoiceAssistant: Boolean
+        get() = sp.getBoolean("coexist_voice_assistant", false)
+        set(v) = sp.edit().putBoolean("coexist_voice_assistant", v).apply()
+
+    // On-device wake word ("hey jarvis"): we run a Vosk recognizer on our own warm mic
+    // and, on a match, fire the assistant's wake handoff — so hands-free works on
+    // Android 10 Portals without an external wake app. The phrase is editable (Vosk
+    // grammar, no new model). Mutually exclusive with coexistVoiceAssistant (that hands
+    // the mic to an EXTERNAL wake app; this IS our own).
+    var wakeWordEnabled: Boolean
+        get() = sp.getBoolean("wake_word_enabled", false)
+        set(v) = sp.edit().putBoolean("wake_word_enabled", v).apply()
+
+    // Always prefaced with "hey" — a bare keyword false-triggers far too easily
+    // (see WakeWordDetector), so we enforce the "hey <word(s)>" form regardless of
+    // what the user types ("jarvis" and "hey jarvis" both store as "hey jarvis").
+    var wakePhrase: String
+        get() = sp.getString("wake_phrase", "hey jarvis") ?: "hey jarvis"
+        set(v) {
+            var s = v.trim().lowercase()
+            while (s.startsWith("hey ")) s = s.substring(4).trim()   // drop leading "hey" the user typed
+            val phrase = if (s.isEmpty() || s == "hey") "hey jarvis" else "hey $s"
+            sp.edit().putString("wake_phrase", phrase).apply()
+        }
+
+    // Alexa support: an INDEPENDENT wake word that hands off to the revived Amazon Alexa
+    // (falcon) client, alongside (not instead of) the Jarvis wake word. When on, the
+    // detector listens for BOTH phrases and routes each to its assistant.
+    var alexaWakeEnabled: Boolean
+        get() = sp.getBoolean("alexa_wake_enabled", false)
+        set(v) = sp.edit().putBoolean("alexa_wake_enabled", v).apply()
+
+    // One-time "Alexa needs USB provisioning" notice, shown on the first settings visit
+    // after landing on an Alexa-capable build (and only when falcon isn't installed —
+    // an app update can't provision Amazon's client, that step is USB-only).
+    var alexaProvisionNoticeShown: Boolean
+        get() = sp.getBoolean("alexa_provision_notice_shown", false)
+        set(v) = sp.edit().putBoolean("alexa_provision_notice_shown", v).apply()
+
+    // Alexa's wake word. Bare (no forced "hey") — that's how Alexa's own wake works; a
+    // single word is inherently more false-prone, so "alexa" is the sensible default.
+    var alexaWakePhrase: String
+        get() = sp.getString("alexa_wake_phrase", "alexa") ?: "alexa"
+        set(v) = sp.edit().putString("alexa_wake_phrase", v.trim().lowercase().ifEmpty { "alexa" }).apply()
+
+    // Hands-free intercom announce: "<wake phrase> announce" → beep → your live voice
+    // broadcasts to every Portal. Only functions while the wake word is enabled.
+    var voiceAnnounceEnabled: Boolean
+        get() = sp.getBoolean("voice_announce_enabled", true)
+        set(v) = sp.edit().putBoolean("voice_announce_enabled", v).apply()
+
+    // Experimental: makes intercom announcements TWO-WAY. When on, finishing any announce
+    // (talk button, drawer, or "<phrase> announce") opens a hands-free reply channel so
+    // recipients can just talk back (VOX + first-come lock). Off by default.
+    var twoWayExperimental: Boolean
+        get() = sp.getBoolean("two_way_experimental", false)
+        set(v) = sp.edit().putBoolean("two_way_experimental", v).apply()
+
+    // Assistant package the wake handoff broadcast targets (portal-wake's contract).
+    var wakeAssistantPackage: String
+        get() = sp.getString("wake_assistant_pkg", "com.portal.assistant") ?: "com.portal.assistant"
+        set(v) = sp.edit().putString("wake_assistant_pkg", v.trim().ifEmpty { "com.portal.assistant" }).apply()
+
     // On-device screen-off timer (independent of HA). When enabled, the screen
     // sleeps after this many minutes with no presence / no wake. Disabled = the
     // screen stays on indefinitely.
@@ -124,32 +224,114 @@ class Prefs(private val context: Context) {
         get() = sp.getString("ha_url", "") ?: ""
         set(v) = sp.edit().putString("ha_url", v).apply()
 
-    // ImmichFrame integration — shows a photo slideshow in the foreground so
-    // the Portal HA Bridge stays visible (which is required for camera access).
-    // Set immichFrameUrl to the base URL of your ImmichFrame server, e.g.
-    // http://192.168.1.10:3000
-    var immichFrameUrl: String
-        get() = sp.getString("immich_frame_url", "") ?: ""
-        set(v) = sp.edit().putString("immich_frame_url", v).apply()
-
+    // Optional ImmichFrame dashboard mode. When enabled, DashboardActivity keeps
+    // Portal HA Bridge in the foreground but points the kiosk WebView at
+    // ImmichFrame instead of Home Assistant.
     var immichFrameEnabled: Boolean
         get() = sp.getBoolean("immich_frame_enabled", false)
         set(v) = sp.edit().putBoolean("immich_frame_enabled", v).apply()
 
-    // Random 16-hex token generated once per install, used as the MJPEG stream
-    // password (username "stream"). Completely independent of MQTT credentials —
-    // the stream stays protected even when MQTT is configured without auth.
-    // Share with Frigate as: http://stream:<token>@<device-ip>:8080/
-    val mjpegToken: String
-        get() {
-            val existing = sp.getString("mjpeg_token", null)
-            if (!existing.isNullOrBlank()) return existing
-            val bytes = ByteArray(8)
-            java.security.SecureRandom().nextBytes(bytes)
-            val token = bytes.joinToString("") { "%02x".format(it) }
-            sp.edit().putString("mjpeg_token", token).apply()
-            return token
+    var immichFrameUrl: String
+        get() = sp.getString("immich_frame_url", "") ?: ""
+        set(v) = sp.edit().putString("immich_frame_url", v.trim()).apply()
+
+    var immichFrameAuthSecret: String
+        get() = sp.getString("immich_frame_auth_secret", "") ?: ""
+        set(v) = sp.edit().putString("immich_frame_auth_secret", v.trim()).apply()
+
+    // Long-lived access token for Home Assistant's REST API, used by the Jarvis
+    // tool-provider (AssistantToolProvider) for the smart-home passthrough. Create
+    // one in HA: Profile -> Long-Lived Access Tokens. Stays on-device, never leaves.
+    var haToken: String
+        get() = sp.getString("ha_token", "") ?: ""
+        set(v) = sp.edit().putString("ha_token", v.trim()).apply()
+
+    // Portal-to-Portal intercom: show a floating push-to-talk button over the
+    // dashboard (optional — the drawer always has a hold-to-announce button).
+    var intercomOverlayEnabled: Boolean
+        get() = sp.getBoolean("intercom_overlay_enabled", false)
+        set(v) = sp.edit().putBoolean("intercom_overlay_enabled", v).apply()
+
+    // True once the button list has ever been written (even to empty) — so reconcile
+    // seeds the default "Talk" button only on first run, not after a deliberate delete-all.
+    fun intercomButtonsConfigured(): Boolean = sp.contains("intercom_buttons")
+
+    // The configured floating talk buttons. Empty list + overlay enabled → a single
+    // default "Talk → Everyone" button is shown (and seeded on first move/config).
+    fun getIntercomButtons(): MutableList<IntercomButton> {
+        val raw = sp.getString("intercom_buttons", "") ?: ""
+        if (raw.isBlank()) return mutableListOf()
+        return runCatching {
+            val arr = JSONArray(raw)
+            MutableList(arr.length()) { i ->
+                val o = arr.getJSONObject(i)
+                IntercomButton(
+                    o.optString("name", "Talk"),
+                    o.optString("target", "all"),
+                    o.optInt("x", -1),
+                    o.optInt("y", -1)
+                )
+            }
+        }.getOrDefault(mutableListOf())
+    }
+
+    fun setIntercomButtons(list: List<IntercomButton>) {
+        val arr = JSONArray()
+        list.forEach { b ->
+            arr.put(JSONObject()
+                .put("name", b.name).put("target", b.target).put("x", b.x).put("y", b.y))
         }
+        sp.edit().putString("intercom_buttons", arr.toString()).apply()
+    }
+
+    // Playback level (0–100) the speaker is set to while an announcement plays.
+    var intercomVolume: Int
+        get() = sp.getInt("intercom_volume", 55)
+        set(v) = sp.edit().putInt("intercom_volume", v.coerceIn(0, 100)).apply()
+
+    // Idle opacity of the floating talk buttons (10–100 %); solid while moving/live.
+    var intercomOverlayOpacity: Int
+        get() = sp.getInt("intercom_overlay_opacity", 45)
+        set(v) = sp.edit().putInt("intercom_overlay_opacity", v.coerceIn(10, 100)).apply()
+
+    // Talk-button background colour as HSV: hue (0–360), saturation + value (0–100).
+    // Drop saturation to 0 for grey; value is the light↔dark control. Defaults match
+    // the old fixed blue (hue 230, sat 65, val 82).
+    var intercomButtonHue: Int
+        get() = sp.getInt("intercom_btn_hue", 230)
+        set(v) = sp.edit().putInt("intercom_btn_hue", v.coerceIn(0, 360)).apply()
+
+    var intercomButtonSat: Int
+        get() = sp.getInt("intercom_btn_sat", 65)
+        set(v) = sp.edit().putInt("intercom_btn_sat", v.coerceIn(0, 100)).apply()
+
+    var intercomButtonVal: Int
+        get() = sp.getInt("intercom_btn_val", 82)
+        set(v) = sp.edit().putInt("intercom_btn_val", v.coerceIn(0, 100)).apply()
+
+    // Talk-button text colour: hue (0–360) + a single "shade" (0 = black, 50 = full
+    // colour, 100 = white). Default 100 = white text.
+    var intercomTextHue: Int
+        get() = sp.getInt("intercom_text_hue", 0)
+        set(v) = sp.edit().putInt("intercom_text_hue", v.coerceIn(0, 360)).apply()
+
+    var intercomTextShade: Int
+        get() = sp.getInt("intercom_text_shade", 100)
+        set(v) = sp.edit().putInt("intercom_text_shade", v.coerceIn(0, 100)).apply()
+
+    // Draw the talk button with no filled background (just the label) when idle.
+    var intercomTransparentBg: Boolean
+        get() = sp.getBoolean("intercom_transparent_bg", false)
+        set(v) = sp.edit().putBoolean("intercom_transparent_bg", v).apply()
+
+    // How the ~400ms wake handoff to the assistant is masked on screen:
+    //  "whoosh"   — an orange curtain sweeps down over everything, then off (an
+    //               intentional animation; never glitches over animated content).
+    //  "snapshot" — a frozen crossfade of the dashboard (seamless on a STATIC
+    //               dashboard; slight jump if the content was animating).
+    var wakeCoverStyle: String
+        get() = sp.getString("wake_cover_style", "snapshot") ?: "snapshot"
+        set(v) = sp.edit().putString("wake_cover_style", v).apply()
 
     val brokerUri: String get() = "tcp://$brokerHost:$brokerPort"
 }

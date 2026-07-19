@@ -10,6 +10,13 @@
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <!--
+        YouTube cast receiver (DIAL): receive SSDP multicast discovery from the
+        phone's YouTube app. Normal permissions, granted at install.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!--
         Granted at setup time via ADB:
             adb shell pm grant com.aeonos.portalha android.permission.WRITE_SECURE_SETTINGS
         Used to auto-enable our own AccessibilityService so sleep works without
@@ -58,6 +65,15 @@
     -->
     <uses-permission android:name="android.permission.READ_LOGS" />
 
+    <!--
+        In-app updater: download the latest signed APK from GitHub releases and
+        install it over the current app (same keystore). On Portals the in-Settings
+        "install unknown apps" toggle is unreliable, so the provisioner grants the
+        app-op directly:
+            adb shell appops set com.aeonos.portalha REQUEST_INSTALL_PACKAGES allow
+    -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <application
         android:label="@string/app_name"
         android:icon="@drawable/ic_launcher"
@@ -77,7 +93,21 @@
 
         <activity
             android:name=".MainActivity"
-            android:exported="false" />
+            android:exported="true" />
+
+        <!--
+            YouTube cast receiver screen (receiver-only WebView with the TV web
+            client). fullSensor: follows how the Portal is physically stood
+            (landscape or portrait); configChanges keeps the WebView alive
+            across rotations instead of reloading the session.
+            singleTask so a second cast reuses the instance via onNewIntent.
+        -->
+        <activity
+            android:name=".TvAppActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="fullSensor"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <activity
             android:name=".CameraSettingsActivity"
@@ -85,6 +115,14 @@
 
         <activity
             android:name=".DisplaySettingsActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".IntercomSettingsActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".IntercomButtonsActivity"
             android:exported="false" />
 
         <service
@@ -116,6 +154,31 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <!-- PackageInstaller session callbacks for the in-app updater. -->
+        <receiver
+            android:name=".UpdateInstallReceiver"
+            android:exported="false" />
+
+        <!--
+            portal-assistant ("Jarvis") tool-provider plugin. Exposes Portal controls
+            (screen/camera/presence) and a Home Assistant passthrough as voice tools.
+            Jarvis discovers it via the two meta-data strings (the public ToolContract);
+            it's off until the user enables it in Jarvis Settings -> External tools, and
+            AssistantToolProvider only accepts invokes from the assistant package.
+        -->
+        <provider
+            android:name=".AssistantToolProvider"
+            android:authorities="com.aeonos.portalha.tools"
+            android:exported="true">
+            <!--
+                Values are INLINE literals, not @string/ references: the assistant reads them with
+                metaData.getString(), and a @string/ reference comes back as a resource id (getString
+                returns null), so the provider would be silently skipped. Literal strings always read back.
+            -->
+            <meta-data android:name="com.portal.assistant.tools" android:value="[{&quot;name&quot;:&quot;com.aeonos.portalha.set_screen&quot;,&quot;description&quot;:&quot;Turn this Meta Portal's display on (wake it) or off (sleep/lock the screen).&quot;,&quot;parameters&quot;:{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;on&quot;:{&quot;type&quot;:&quot;boolean&quot;,&quot;description&quot;:&quot;true = wake the screen, false = turn the screen off.&quot;}},&quot;required&quot;:[&quot;on&quot;]}},{&quot;name&quot;:&quot;com.aeonos.portalha.set_camera&quot;,&quot;description&quot;:&quot;Turn this Portal's camera (the Home Assistant video stream) on or off.&quot;,&quot;parameters&quot;:{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;on&quot;:{&quot;type&quot;:&quot;boolean&quot;,&quot;description&quot;:&quot;true = enable the camera, false = disable it.&quot;}},&quot;required&quot;:[&quot;on&quot;]}},{&quot;name&quot;:&quot;com.aeonos.portalha.get_presence&quot;,&quot;description&quot;:&quot;Check whether someone is currently present in front of this Portal (room occupancy).&quot;,&quot;parameters&quot;:{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{}}},{&quot;name&quot;:&quot;com.aeonos.portalha.home_assistant_list&quot;,&quot;description&quot;:&quot;Discover Home Assistant devices/entities and their entity_id. Use this FIRST to find a device by name, then control it with home_assistant_service. Works for ALL devices (even ones not exposed to Assist). Filter with 'query' (matches the friendly name or id, e.g. 'thea' or 'bedroom') and/or 'domain' (e.g. 'light','switch','climate','lock','cover','media_player').&quot;,&quot;parameters&quot;:{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;query&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;description&quot;:&quot;Substring matched against entity name or id, e.g. 'thea', 'kitchen'. Optional.&quot;},&quot;domain&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;description&quot;:&quot;Limit to one domain, e.g. 'light','switch','climate'. Optional.&quot;}}}},{&quot;name&quot;:&quot;com.aeonos.portalha.home_assistant_service&quot;,&quot;description&quot;:&quot;Control a Home Assistant entity by id (get the id from home_assistant_list). Works for any entity. Example: domain 'light', service 'turn_on', entity_id 'light.theas_light'.&quot;,&quot;parameters&quot;:{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;domain&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;description&quot;:&quot;Service domain, e.g. 'light','switch','scene','climate','lock','cover'.&quot;},&quot;service&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;description&quot;:&quot;Service, e.g. 'turn_on','turn_off','toggle','set_temperature'.&quot;},&quot;entity_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;description&quot;:&quot;Target entity id, e.g. 'light.theas_light'. Optional for services that need none.&quot;},&quot;data_json&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;description&quot;:&quot;Optional extra data as a JSON object string, e.g. {'brightness_pct': 50}.&quot;}},&quot;required&quot;:[&quot;domain&quot;,&quot;service&quot;]}},{&quot;name&quot;:&quot;com.aeonos.portalha.home_assistant&quot;,&quot;description&quot;:&quot;Send a natural-language command or question to Home Assistant Assist (e.g. 'is the garage open?'). NOTE: only reaches entities the user EXPOSED to Assist; if it says it can't find the device, use home_assistant_list then home_assistant_service instead.&quot;,&quot;parameters&quot;:{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{&quot;command&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;description&quot;:&quot;The natural-language request or question.&quot;}},&quot;required&quot;:[&quot;command&quot;]}}]" />
+            <meta-data android:name="com.portal.assistant.tools.summary" android:value="Control this Portal (screen, camera, presence) and your whole Home Assistant smart home by voice." />
+        </provider>
 
     </application>
 </manifest>

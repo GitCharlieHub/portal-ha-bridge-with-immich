@@ -27,7 +27,11 @@ class MediaKeepAlive {
     private var session: MediaSession? = null
 
     fun start(context: Context) {
-        if (track == null) runCatching {
+        // EXPERIMENT: the continuous silent AudioTrack occupies an audio output path and, on
+        // the Portal's Qualcomm HAL, appears to starve a voice assistant's concurrent
+        // `voice-assistant-playback` route — Alexa/falcon TTS gets focus but no audible output.
+        // Testing whether the MediaSession alone keeps the launcher from idle-kicking us.
+        if (false && track == null) runCatching {
             val silence = ShortArray(SAMPLE_RATE) // 1 s of silence, looped forever
             val t = AudioTrack.Builder()
                 .setAudioAttributes(AudioAttributes.Builder()
