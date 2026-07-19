@@ -31,6 +31,13 @@ class MainActivity : AppCompatActivity() {
         val etHaToken = findViewById<EditText>(R.id.et_ha_token)
         etHaToken.setText(prefs.haToken)
 
+        val cbImmichFrame = findViewById<CheckBox>(R.id.cb_immich_frame_enabled)
+        val etImmichFrameUrl = findViewById<EditText>(R.id.et_immich_frame_url)
+        val etImmichFrameAuthSecret = findViewById<EditText>(R.id.et_immich_frame_auth_secret)
+        cbImmichFrame.isChecked = prefs.immichFrameEnabled
+        etImmichFrameUrl.setText(prefs.immichFrameUrl)
+        etImmichFrameAuthSecret.setText(prefs.immichFrameAuthSecret)
+
         // Back to the dashboard (MainActivity is always opened from it)
         findViewById<Button>(R.id.btn_back).setOnClickListener { finish() }
 
@@ -96,6 +103,9 @@ class MainActivity : AppCompatActivity() {
             prefs.deviceName = etName.text.toString().trim().ifEmpty { "Portal" }
             prefs.haUrl = etHaUrl.text.toString().trim()
             prefs.haToken = etHaToken.text.toString().trim()
+            prefs.immichFrameEnabled = cbImmichFrame.isChecked
+            prefs.immichFrameUrl = etImmichFrameUrl.text.toString().trim()
+            prefs.immichFrameAuthSecret = etImmichFrameAuthSecret.text.toString().trim()
             BridgeService.stop(this)
             BridgeService.start(this)
             updateStatus()

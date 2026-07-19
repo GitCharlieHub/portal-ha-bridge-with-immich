@@ -90,6 +90,17 @@ Open **Portal HA Bridge** on the device and enter your **MQTT broker** host/port
 
 The HA device appears automatically.
 
+### Optional: ImmichFrame foreground dashboard
+
+This fork can keep **Portal HA Bridge** as the foreground app while the dashboard WebView displays your **ImmichFrame** slideshow. That preserves the Portal camera foreground behavior while showing photos.
+
+In **Settings**, enable **Show ImmichFrame in the foreground dashboard**, then enter:
+
+- **ImmichFrame URL**: your ImmichFrame client URL, for example `http://192.168.1.20:8080`
+- **ImmichFrame Authentication Secret**: optional; when set, the app appends `authsecret` to the ImmichFrame viewer URL
+
+On the ImmichFrame server, set `General.AuthenticationSecret` to the same value. Leave ImmichFrame mode off to use the upstream Home Assistant dashboard behavior.
+
 ---
 
 ## Camera streaming (RTSP → Home Assistant)

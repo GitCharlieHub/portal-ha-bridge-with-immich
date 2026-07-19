@@ -22,8 +22,8 @@ android {
         // 28 = Android 9 (Portal+); 29 = Android 10 (Portal / Portal Mini).
         minSdk = 28
         targetSdk = 35
-        versionCode = 37
-        versionName = "1.17.2"
+        versionCode = 38
+        versionName = "1.17.2-immich.1"
 
         // Portals are ARM — ship only ARM native libs (Vosk/RootEncoder bundle x86 +
         // x86_64 + mips for emulators, ~20 MB of dead weight on real hardware).
@@ -70,6 +70,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.paho.mqtt)
+    testImplementation("junit:junit:4.13.2")
 
     // RTSP server (headless RtspServerStream). Kotlin-2.0-era versions so they
     // build cleanly under our Kotlin 2.0.20 — no metadata hacks.

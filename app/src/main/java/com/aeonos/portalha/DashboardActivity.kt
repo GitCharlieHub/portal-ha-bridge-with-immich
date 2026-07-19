@@ -48,6 +48,8 @@ class DashboardActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var drawer: DrawerLayout
     private lateinit var prefs: Prefs
+    private var externalBridgeInstalled = false
+    private var lastLoadedDashboardUrl = ""
 
     // Intercom drawer controls. peerIds is kept aligned with the spinner rows;
     // index 0 is "Everyone" (broadcast → null target), the rest are peer ids.
@@ -91,14 +93,6 @@ class DashboardActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture = false
             cacheMode = WebSettings.LOAD_DEFAULT
         }
-
-        // Speak HA's frontend "external app" protocol so the dashboard treats us as a native
-        // wrapper (native settings entry + working voice button + no-logout auth). CAUTION: once
-        // window.externalApp exists, the frontend routes AUTH through us (getExternalAuth) — so we
-        // only inject the bridge when a long-lived token is configured to answer it. Without a token
-        // there's nothing to authenticate with, and the dashboard would hang on the loading screen.
-        if (prefs.haToken.isNotBlank())
-            webView.addJavascriptInterface(HaExternalBridge(this, webView, prefs), "externalApp")
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onPermissionRequest(request: PermissionRequest) {
@@ -166,7 +160,7 @@ class DashboardActivity : AppCompatActivity() {
         // than showing the empty dashboard placeholder. Only on a genuine fresh
         // create — savedInstanceState guards against config-change recreation,
         // and onCreate (not onResume) means backing out of Settings won't loop.
-        if (savedInstanceState == null && prefs.haUrl.isBlank()) {
+        if (savedInstanceState == null && selectedDashboardUrl().isBlank()) {
             startActivity(Intent(this, MainActivity::class.java))
         }
     }
@@ -207,10 +201,9 @@ class DashboardActivity : AppCompatActivity() {
         // Re-acquire the camera if another app (e.g. the Portal launcher) took
         // it while we were in the background.
         BridgeService.ensureCamera(this)
-        // Reload if URL changed in settings
-        val url = prefs.haUrl
-        val current = webView.url ?: ""
-        if (url.isNotEmpty() && !current.startsWith(normalise(url).trimEnd('/'))) {
+        // Reload if the selected dashboard target changed in settings.
+        val target = selectedDashboardUrl()
+        if (target.isNotEmpty() && target != lastLoadedDashboardUrl) {
             loadDashboard()
         }
     }
@@ -291,19 +284,44 @@ class DashboardActivity : AppCompatActivity() {
     }
 
     private fun loadDashboard() {
-        val url = prefs.haUrl.trim()
+        val url = selectedDashboardUrl()
+        configureExternalBridge()
         if (url.isEmpty()) {
             showPlaceholder(
                 "Swipe in from the <b>left edge</b> to open the menu, " +
-                "then tap <b>Settings</b> to enter your Home Assistant URL.")
+                "then tap <b>Settings</b> to enter your Home Assistant or ImmichFrame URL.")
         } else {
-            webView.loadUrl(normalise(url))
+            lastLoadedDashboardUrl = url
+            webView.loadUrl(url)
         }
     }
 
-    private fun normalise(url: String) = when {
-        url.startsWith("http://") || url.startsWith("https://") -> url
-        else -> "http://$url"
+    private fun selectedDashboardUrl(): String {
+        return if (ImmichFrameDashboard.isEnabled(prefs.immichFrameEnabled, prefs.immichFrameUrl)) {
+            ImmichFrameDashboard.buildUrl(prefs.immichFrameUrl, prefs.immichFrameAuthSecret)
+        } else {
+            prefs.haUrl.trim().takeIf { it.isNotEmpty() }?.let { ImmichFrameDashboard.normalise(it) } ?: ""
+        }
+    }
+
+    private fun configureExternalBridge() {
+        val immichMode = ImmichFrameDashboard.isEnabled(prefs.immichFrameEnabled, prefs.immichFrameUrl)
+        if (immichMode || prefs.haToken.isBlank()) {
+            if (externalBridgeInstalled) {
+                webView.removeJavascriptInterface("externalApp")
+                externalBridgeInstalled = false
+            }
+            return
+        }
+
+        if (!externalBridgeInstalled) {
+            // Speak HA's frontend "external app" protocol so the dashboard treats us as a native
+            // wrapper (native settings entry + working voice button + no-logout auth). CAUTION: once
+            // window.externalApp exists, the frontend routes AUTH through us (getExternalAuth), so it
+            // must not be exposed while the WebView is showing ImmichFrame.
+            webView.addJavascriptInterface(HaExternalBridge(this, webView, prefs), "externalApp")
+            externalBridgeInstalled = true
+        }
     }
 
     /**
