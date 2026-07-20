@@ -57,7 +57,8 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
 
     fun start(width: Int, height: Int, fps: Int, bitrate: Int, withAudio: Boolean): Boolean {
         if (isStreaming) return true
-        baseWidth = width; baseHeight = height; baseFps = fps; baseBitrate = bitrate; baseAudio = withAudio
+        val stableFps = RtspVideoPolicy.coerceFps(fps)
+        baseWidth = width; baseHeight = height; baseFps = stableFps; baseBitrate = bitrate; baseAudio = withAudio
         return runCatching {
             // Portal cameras are all front-facing; RootEncoder defaults to BACK
             // (empty here), so build the source explicitly on FRONT.
@@ -100,18 +101,22 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
             // encoder default if this device can't do Constrained Baseline.
             val profile = MediaCodecInfo.CodecProfileLevel.AVCProfileConstrainedBaseline
             val level = MediaCodecInfo.CodecProfileLevel.AVCLevel31
-            var videoOk = s.prepareVideo(encW, encH, bitrate, fps, 2, rot, profile, level)
+            var videoOk = s.prepareVideo(encW, encH, bitrate, stableFps, RtspVideoPolicy.KEYFRAME_INTERVAL_SECONDS, rot, profile, level)
             if (!videoOk) {
                 Log.w(TAG, "Constrained-Baseline prepare failed; using encoder default profile")
-                videoOk = s.prepareVideo(encW, encH, bitrate, fps, 2, rot)
+                videoOk = s.prepareVideo(encW, encH, bitrate, stableFps, RtspVideoPolicy.KEYFRAME_INTERVAL_SECONDS, rot)
             }
+            // Camera2Source.init() and MediaCodec's MediaFormat both receive
+            // stableFps via prepareVideo. Avoid forceFpsLimit(true) here: in this
+            // source->GL->surface path it can starve the encoder on Portal.
             // Always prepare the audio encoder — startStream() requires it even with
             // NoAudioSource (NoAudioSource just means no mic is opened, no data fed).
             val audioOk = s.prepareAudio(16000, false, 64_000)
             if (videoOk && audioOk) {
                 s.startStream()
+                s.requestKeyframe()
                 isStreaming = true
-                Log.i(TAG, "RTSP streaming on ${url()} ${encW}x${encH} rot=$rot squash=$squashedFrontCam (audio=$withAudio)")
+                Log.i(TAG, "RTSP streaming on ${url()} ${encW}x${encH} rot=$rot fps=$stableFps gop=${RtspVideoPolicy.KEYFRAME_INTERVAL_SECONDS}s squash=$squashedFrontCam (audio=$withAudio)")
                 true
             } else {
                 Log.w(TAG, "RTSP prepare failed (video=$videoOk audio=$audioOk)")
@@ -146,7 +151,13 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
     }
 
     override fun onConnectionStarted(url: String) { Log.i(TAG, "rtsp client connecting: $url") }
-    override fun onConnectionSuccess() { Log.i(TAG, "rtsp client connected") }
+    override fun onConnectionSuccess() {
+        Log.i(TAG, "rtsp client connected")
+        // A client that joins between GOP boundaries can buffer P-frames until the
+        // next IDR. Ask MediaCodec for a fresh IDR immediately; RootEncoder also
+        // re-publishes cached SPS/PPS before that sync frame for H.264 clients.
+        runCatching { stream?.requestKeyframe() }
+    }
     override fun onConnectionFailed(reason: String) {
         Log.w(TAG, "rtsp failed: $reason")
         // Only the two known-fatal signatures kill the stream; per-client
