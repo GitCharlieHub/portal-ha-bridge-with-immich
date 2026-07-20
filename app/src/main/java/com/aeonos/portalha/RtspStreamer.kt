@@ -79,22 +79,13 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
             // capture landscape; the camera-fill is a library limitation. Fine for
             // a landscape-mounted Portal (auto-rotate keeps it landscape = no bars).
             val rot = currentRotation()
-            // The squashing front cam scales its true FOV into whatever surface we ask
-            // for. The two Portal+ models differ:
-            //   aloha  - ~SQUARE FOV: encode 480x480 -> displays 1:1 natively, correct
-            //            in any player with no override.
-            //   cipher - 4:3 FOV but the cam is portrait-mounted, so making it upright
-            //            (rot=90) forces the content into a 480x640 portrait buffer
-            //            (the 4:3 scene squashed into 3:4). The stream is correct only
-            //            when displayed at 4:3. RootEncoder can't bake that (no SAR
-            //            setter; its scale modes only letterbox) so the 4:3 is applied
-            //            viewer-side: HA WebRTC card adds a SAR via go2rtc's ffmpeg
-            //            (#raw=-bsf:v h264_metadata=sample_aspect_ratio=16/9); VLC uses
-            //            its 4:3 setting. TODO: a DIY encoder pipeline could stamp SAR.
-            val corrected = squashedFrontCam && width * 9 == height * 16
+            // The squashing front cam scales its true FOV into whatever source size
+            // we ask for. Keep the coded frame's display aspect correct at the RTSP
+            // source so Frigate recordings don't need the HA live-view SAR filter.
             val isCipher = android.os.Build.DEVICE.equals("cipher", true)
-            val encW = if (corrected) (if (isCipher) 640 else 480) else width
-            val encH = if (corrected) 480 else height
+            val geometry = RtspVideoPolicy.streamGeometry(width, height, rot, squashedFrontCam, isCipher)
+            val encW = geometry.sourceWidth
+            val encH = geometry.sourceHeight
             // Force H.264 Constrained Baseline — WebRTC browser decoders (and most
             // RTSP camera clients) need it. RootEncoder's default is HIGH profile,
             // which WebRTC rejects → "one keyframe then freeze". Fall back to the
@@ -116,7 +107,7 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
                 s.startStream()
                 s.requestKeyframe()
                 isStreaming = true
-                Log.i(TAG, "RTSP streaming on ${url()} ${encW}x${encH} rot=$rot fps=$stableFps gop=${RtspVideoPolicy.KEYFRAME_INTERVAL_SECONDS}s squash=$squashedFrontCam (audio=$withAudio)")
+                Log.i(TAG, "RTSP streaming on ${url()} source=${encW}x${encH} coded=${geometry.codedWidth}x${geometry.codedHeight} rot=$rot fps=$stableFps gop=${RtspVideoPolicy.KEYFRAME_INTERVAL_SECONDS}s squash=$squashedFrontCam (audio=$withAudio)")
                 true
             } else {
                 Log.w(TAG, "RTSP prepare failed (video=$videoOk audio=$audioOk)")

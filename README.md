@@ -137,14 +137,7 @@ Notes:
 The Portal+ front camera ("Smart Camera") only exposes a virtual sensor that scales its field of view into whatever size is requested, so a normal 16:9 request comes out badly stretched. The app corrects this per model:
 
 - **Portal+ 1st gen (`aloha`)** — its usable FOV is ~square, so the stream is encoded **480×480 (1:1)**. It displays correctly in every player with **no extra config**.
-- **Portal+ 2nd gen (`cipher`)** — its FOV is 4:3 but the camera is portrait-mounted, so making it upright forces a **480×640** portrait buffer (a 4:3 scene squashed into 3:4). The encoder library can't stamp a pixel-aspect flag, so the 4:3 is applied **viewer-side**. For the HA WebRTC card, add a SAR via go2rtc's ffmpeg — it's a no-re-encode bitstream filter:
-
-  ```yaml
-  type: custom:webrtc-camera
-  url: 'ffmpeg:rtsp://<cipher-ip>:8554/#video=copy#raw=-bsf:v h264_metadata=sample_aspect_ratio=16/9'
-  ```
-
-  In VLC direct, set **Video → Aspect Ratio → 4:3**. (A future encoder-pipeline rewrite could bake the aspect into the stream itself.)
+- **Portal+ 2nd gen (`cipher`)** — its FOV is 4:3 but the camera is portrait-mounted. The app now requests a portrait camera surface and lets RootEncoder rotate that into a **640×480** coded stream, so Frigate recordings and snapshots no longer need a viewer-side SAR workaround. The current encoder library preserves the upright camera image with side bars instead of stretching it, which avoids squashed recordings.
 
 ### Show camera feeds only when on (HA dashboard view)
 
@@ -279,7 +272,7 @@ Plus an on-device idle timer (**Screen Timeout** / **…Minutes**) that sleeps t
 ## Per-model notes
 
 - **Temperature / RGB / sensors** are hardware-dependent and auto-detected — entities only appear if the sensor exists.
-- **Camera aspect ratio** differs by Portal+ generation — `aloha` streams square (1:1, no config), `cipher` streams 480×640 and needs the one-line 4:3 SAR filter in the HA card. See [Portal+ camera aspect ratio](#portal-camera-aspect-ratio).
+- **Camera aspect ratio** differs by Portal+ generation — `aloha` streams square (1:1, no config), `cipher` streams recording-safe 640×480 with side bars to avoid squashing. See [Portal+ camera aspect ratio](#portal-camera-aspect-ratio).
 - **Camera orientation**: both Portal+ models have a **fixed camera** (it doesn't pivot with the screen), so accelerometer auto-rotate is disabled for them and the stream uses a fixed rotation — upright out of the box (`aloha` rot 0, `cipher` rot 90), adjustable with the in-app **Rotate** button. Auto-rotate still applies to non-Portal+ models.
 - **Portal+ 2nd gen (`cipher`)**: its accelerometer is mounted on the **moving screen arm**, which heavily dampens taps — so the tap threshold is auto-scaled, the gesture is relabelled **"Tilt"**, and its dominant (Z) axis reports **up/down** instead of front/back. All automatic — no config.
 - **Intercom**: **every model can be two-way.** Out of the box a **Portal+** has Meta's "Hey Alexa" detector holding the far-field mic, which makes it receive-only — the provisioner frees it (`--free-mic`), and **provisioning Alexa (`--alexa` / `-Alexa`) frees it automatically** (the bridge supplies its own wake word instead). Capability is measured automatically at startup either way — see [Intercom](#intercom-portal-to-portal-announce).
