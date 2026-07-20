@@ -8,24 +8,15 @@ object RtspVideoPolicy {
 
     fun frameDurationUs(fps: Int = TARGET_FPS): Long = 1_000_000L / fps
 
-    fun streamGeometry(
+    fun correctedGeometry(
         requestedWidth: Int,
         requestedHeight: Int,
         rotation: Int,
         isSquashedFrontCam: Boolean,
-        isCipher: Boolean,
     ): StreamGeometry {
         val corrected = isSquashedFrontCam && requestedWidth * 9 == requestedHeight * 16
-        val sourceWidth = when {
-            !corrected -> requestedWidth
-            isCipher -> 480
-            else -> 480
-        }
-        val sourceHeight = when {
-            !corrected -> requestedHeight
-            isCipher -> 640
-            else -> 480
-        }
+        val sourceWidth = if (corrected) 480 else requestedWidth
+        val sourceHeight = if (corrected) 480 else requestedHeight
         val normalizedRotation = (((rotation % 360) + 360) % 360)
         val swapsCodedSize = normalizedRotation == 90 || normalizedRotation == 270
         return StreamGeometry(

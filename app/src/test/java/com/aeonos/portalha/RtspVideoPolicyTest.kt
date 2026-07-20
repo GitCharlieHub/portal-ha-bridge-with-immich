@@ -20,29 +20,12 @@ class RtspVideoPolicyTest {
     }
 
     @Test
-    fun `cipher corrected geometry encodes recording friendly four by three`() {
-        val geometry = RtspVideoPolicy.streamGeometry(
-            requestedWidth = 1280,
-            requestedHeight = 720,
-            rotation = 90,
-            isSquashedFrontCam = true,
-            isCipher = true,
-        )
-
-        assertEquals(480, geometry.sourceWidth)
-        assertEquals(640, geometry.sourceHeight)
-        assertEquals(640, geometry.codedWidth)
-        assertEquals(480, geometry.codedHeight)
-    }
-
-    @Test
-    fun `aloha corrected geometry stays square`() {
-        val geometry = RtspVideoPolicy.streamGeometry(
+    fun `portal plus corrected geometry stays square`() {
+        val geometry = RtspVideoPolicy.correctedGeometry(
             requestedWidth = 1280,
             requestedHeight = 720,
             rotation = 0,
             isSquashedFrontCam = true,
-            isCipher = false,
         )
 
         assertEquals(480, geometry.sourceWidth)

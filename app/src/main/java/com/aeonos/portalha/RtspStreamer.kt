@@ -79,11 +79,10 @@ class RtspStreamer(private val context: Context, private val port: Int = 8554) :
             // capture landscape; the camera-fill is a library limitation. Fine for
             // a landscape-mounted Portal (auto-rotate keeps it landscape = no bars).
             val rot = currentRotation()
-            // The squashing front cam scales its true FOV into whatever source size
-            // we ask for. Keep the coded frame's display aspect correct at the RTSP
-            // source so Frigate recordings don't need the HA live-view SAR filter.
-            val isCipher = android.os.Build.DEVICE.equals("cipher", true)
-            val geometry = RtspVideoPolicy.streamGeometry(width, height, rot, squashedFrontCam, isCipher)
+            // The squashing Portal+ front cam scales its true FOV into whatever
+            // source size we ask for. Keep the source square, matching the original
+            // Portal+ correction path, so live preview is not stretched.
+            val geometry = RtspVideoPolicy.correctedGeometry(width, height, rot, squashedFrontCam)
             val encW = geometry.sourceWidth
             val encH = geometry.sourceHeight
             // Force H.264 Constrained Baseline — WebRTC browser decoders (and most
