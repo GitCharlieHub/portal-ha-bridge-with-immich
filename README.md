@@ -103,6 +103,8 @@ In **Settings**, enable **Show ImmichFrame in the foreground dashboard**, then e
 - **ImmichFrame URL**: your ImmichFrame client URL, for example `http://<immichframe-host>:8080`
 - **ImmichFrame Authentication Secret**: optional; when set, the app appends ImmichFrame's `authsecret` query parameter to the viewer URL
 
+The dashboard's left-edge drawer also has a **Dashboard** switch so you can flip between ImmichFrame and Home Assistant without reopening Settings. After a reboot, if the Portal dashboard starts before Wi-Fi or ImmichFrame is reachable, the ImmichFrame page retries automatically instead of staying on the first failed load.
+
 On the ImmichFrame server, set `General.AuthenticationSecret` to the same value. Leave ImmichFrame mode off to use the upstream Home Assistant dashboard behavior.
 
 Tested on a physical Meta Portal with ImmichFrame visible in the foreground and the RTSP stream still available.
