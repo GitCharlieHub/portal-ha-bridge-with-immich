@@ -44,4 +44,30 @@ class ImmichFrameDashboardTest {
         assertFalse(ImmichFrameDashboard.isEnabled(false, "frame.local"))
         assertFalse(ImmichFrameDashboard.isEnabled(true, "   "))
     }
+
+    @Test
+    fun selectedDashboardPrefersConfiguredImmichFrame() {
+        assertEquals(
+            "http://frame.local?authsecret=example",
+            DashboardTarget.selectedUrl(
+                immichFrameEnabled = true,
+                immichFrameUrl = "frame.local",
+                immichFrameAuthSecret = "example",
+                haUrl = "http://homeassistant.local:8123",
+            )
+        )
+    }
+
+    @Test
+    fun selectedDashboardFallsBackToHomeAssistantWhenImmichFrameIsOff() {
+        assertEquals(
+            "http://homeassistant.local:8123",
+            DashboardTarget.selectedUrl(
+                immichFrameEnabled = false,
+                immichFrameUrl = "frame.local",
+                immichFrameAuthSecret = "example",
+                haUrl = "homeassistant.local:8123",
+            )
+        )
+    }
 }

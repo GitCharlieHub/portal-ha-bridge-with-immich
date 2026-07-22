@@ -45,6 +45,38 @@
             android:text="Reload"
             android:backgroundTint="#3A3A5C" />
 
+        <!-- Dashboard target -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="#33FFFFFF"
+            android:layout_marginTop="28dp"
+            android:layout_marginBottom="20dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Dashboard"
+            android:textColor="#AAB0FF"
+            android:textSize="13sp"
+            android:layout_marginBottom="8dp" />
+
+        <Switch
+            android:id="@+id/sw_dashboard_target"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="ImmichFrame"
+            android:textColor="#FFFFFF"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/tv_dashboard_target_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="#888FAA"
+            android:textSize="11sp"
+            android:layout_marginBottom="4dp" />
+
         <!-- Intercom -->
         <View
             android:layout_width="match_parent"

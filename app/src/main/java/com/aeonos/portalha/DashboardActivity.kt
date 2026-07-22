@@ -13,6 +13,7 @@ import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.Spinner
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 
@@ -56,7 +57,12 @@ class DashboardActivity : AppCompatActivity() {
     private lateinit var spinnerTarget: Spinner
     private lateinit var tvIntercomStatus: TextView
     private lateinit var btnAnnounce: Button
+    private lateinit var swDashboardTarget: Switch
+    private lateinit var tvDashboardTargetStatus: TextView
     private var peerIds: List<String?> = listOf(null)
+    private val dashboardRetryHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var dashboardRetryCount = 0
+    private var lastLoadWasImmichFrame = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,15 +112,19 @@ class DashboardActivity : AppCompatActivity() {
                 view.evaluateJavascript(alwaysVisibleJs(), null)
             }
             override fun onPageFinished(view: WebView, url: String) {
+                dashboardRetryCount = 0
                 view.evaluateJavascript(alwaysVisibleJs(), null)
             }
             override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
                 handler.proceed() // Accept self-signed certs for local HA
             }
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-                if (request.isForMainFrame) showPlaceholder(
-                    "Failed to load.<br><br>Swipe in from the <b>left edge</b> to open the menu, " +
-                    "then tap <b>Settings</b> to check your Home Assistant URL.")
+                if (request.isForMainFrame) {
+                    showPlaceholder(
+                        "Failed to load.<br><br>Swipe in from the <b>left edge</b> to open the menu, " +
+                        "then tap <b>Settings</b> to check your dashboard URL.")
+                    scheduleImmichFrameRetry()
+                }
             }
             override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
                 // The WebView renderer died (usually OOM on a long-running
@@ -151,6 +161,7 @@ class DashboardActivity : AppCompatActivity() {
             loadDashboard()
         }
 
+        setupDashboardTargetSwitch()
         setupIntercom()
 
         instance = this
@@ -192,6 +203,11 @@ class DashboardActivity : AppCompatActivity() {
         BridgeService.setDashboardForeground(false)
     }
 
+    override fun onDestroy() {
+        dashboardRetryHandler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
     override fun onResume() {
         super.onResume()
         instance = this
@@ -206,6 +222,45 @@ class DashboardActivity : AppCompatActivity() {
         if (target.isNotEmpty() && target != lastLoadedDashboardUrl) {
             loadDashboard()
         }
+        refreshDashboardTargetSwitch()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun setupDashboardTargetSwitch() {
+        swDashboardTarget = findViewById(R.id.sw_dashboard_target)
+        tvDashboardTargetStatus = findViewById(R.id.tv_dashboard_target_status)
+        refreshDashboardTargetSwitch()
+    }
+
+    private fun refreshDashboardTargetSwitch() {
+        if (!::swDashboardTarget.isInitialized) return
+        val hasImmichUrl = prefs.immichFrameUrl.trim().isNotEmpty()
+        val immichActive = ImmichFrameDashboard.isEnabled(prefs.immichFrameEnabled, prefs.immichFrameUrl)
+        swDashboardTarget.setOnCheckedChangeListener(null)
+        swDashboardTarget.isEnabled = hasImmichUrl
+        swDashboardTarget.alpha = if (hasImmichUrl) 1f else 0.5f
+        swDashboardTarget.isChecked = immichActive
+        swDashboardTarget.text = if (immichActive) "ImmichFrame" else "Home Assistant"
+        tvDashboardTargetStatus.text = when {
+            immichActive -> "Showing ImmichFrame after reloads and reboots."
+            hasImmichUrl -> "Showing Home Assistant. Toggle on to use ImmichFrame."
+            else -> "Set ImmichFrame URL in Settings to enable this switch."
+        }
+        swDashboardTarget.setOnCheckedChangeListener { _, checked -> changeDashboardTarget(checked) }
+    }
+
+    private fun changeDashboardTarget(immichFrame: Boolean) {
+        if (immichFrame && prefs.immichFrameUrl.trim().isEmpty()) {
+            swDashboardTarget.setOnCheckedChangeListener(null)
+            swDashboardTarget.isChecked = false
+            swDashboardTarget.setOnCheckedChangeListener { _, checked -> changeDashboardTarget(checked) }
+            Toast.makeText(this, "Enter an ImmichFrame URL in Settings first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        prefs.immichFrameEnabled = immichFrame
+        dashboardRetryCount = 0
+        refreshDashboardTargetSwitch()
+        loadDashboard()
     }
 
     // ── Intercom (push-to-announce) ───────────────────────────────────────────
@@ -285,6 +340,7 @@ class DashboardActivity : AppCompatActivity() {
 
     private fun loadDashboard() {
         val url = selectedDashboardUrl()
+        lastLoadWasImmichFrame = ImmichFrameDashboard.isEnabled(prefs.immichFrameEnabled, prefs.immichFrameUrl)
         configureExternalBridge()
         if (url.isEmpty()) {
             showPlaceholder(
@@ -296,12 +352,25 @@ class DashboardActivity : AppCompatActivity() {
         }
     }
 
+    private fun scheduleImmichFrameRetry() {
+        if (!lastLoadWasImmichFrame || dashboardRetryCount >= 12) return
+        dashboardRetryCount++
+        val delayMs = (5_000L * dashboardRetryCount).coerceAtMost(60_000L)
+        dashboardRetryHandler.removeCallbacksAndMessages(null)
+        dashboardRetryHandler.postDelayed({
+            if (ImmichFrameDashboard.isEnabled(prefs.immichFrameEnabled, prefs.immichFrameUrl)) {
+                loadDashboard()
+            }
+        }, delayMs)
+    }
+
     private fun selectedDashboardUrl(): String {
-        return if (ImmichFrameDashboard.isEnabled(prefs.immichFrameEnabled, prefs.immichFrameUrl)) {
-            ImmichFrameDashboard.buildUrl(prefs.immichFrameUrl, prefs.immichFrameAuthSecret)
-        } else {
-            prefs.haUrl.trim().takeIf { it.isNotEmpty() }?.let { ImmichFrameDashboard.normalise(it) } ?: ""
-        }
+        return DashboardTarget.selectedUrl(
+            immichFrameEnabled = prefs.immichFrameEnabled,
+            immichFrameUrl = prefs.immichFrameUrl,
+            immichFrameAuthSecret = prefs.immichFrameAuthSecret,
+            haUrl = prefs.haUrl,
+        )
     }
 
     private fun configureExternalBridge() {
